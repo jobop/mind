@@ -87,3 +87,17 @@ test('legacy node secrets migrate atomically into the workspace, preserve distin
   await x.p.handle(req('/api/projects/'+x.b.id,x.alice,undefined,'DELETE'));assert.equal(x.p.db.prepare('SELECT count(*) AS n FROM project_git_credentials').get().n,0);
  }finally{x.p.close();}
 });
+
+
+test('deployment task check uses the same SQLite runtime as the application and reads modern schemas without mutation',async()=>{
+ const {activeJobs}=await import('../deploy/wait-for-jobs.mjs');
+ const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const directory=await mkdtemp(join(tmpdir(),'mind-deploy-check-')),path=join(directory,'projects.sqlite');
+ try{
+  assert.equal(activeJobs(path),0);
+  const p=new ProjectService(path);new ResourceService(p,'test-secret');
+  p.db.exec("CREATE TABLE generation_jobs(status TEXT);INSERT INTO generation_jobs VALUES('running'),('queued'),('succeeded');");
+  assert.equal(activeJobs(path),2);assert.equal(p.db.prepare('SELECT count(*) AS n FROM generation_jobs').get().n,3);
+  p.db.exec("UPDATE generation_jobs SET status='succeeded'");assert.equal(activeJobs(path),0);p.close();
+ }finally{await rm(directory,{recursive:true,force:true});}
+});

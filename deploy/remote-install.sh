@@ -123,7 +123,7 @@ install -d -m 700 "$backup"
 [[ ! -f $envfile ]] || cp -p "$envfile" "$backup/mind.env"
 [[ ! -f $nginx_conf ]] || cp -p "$nginx_conf" "$backup/nginx.conf"
 printf '%s\n' "$old_release" > "$backup/previous-release"
-if systemctl is-active --quiet mind.service; then python3 "$release/deploy/wait-for-jobs.py" /var/lib/mind/projects.sqlite; fi
+if systemctl is-active --quiet mind.service; then "$release/bin/node" "$release/deploy/wait-for-jobs.mjs" /var/lib/mind/projects.sqlite; fi
 transaction=1
 python3 - "$envfile" "$domain" <<'PY'
 import pathlib,sys,os

@@ -96,7 +96,7 @@ cp -p "$caddyfile" "$backup/Caddyfile"
 [[ ! -f $unit ]] || cp -p "$unit" "$backup/mind.service"
 [[ ! -f $envfile ]] || cp -p "$envfile" "$backup/mind.env"
 printf '%s\n' "$old_release" > "$backup/previous-release"
-if systemctl is-active --quiet mind.service; then python3 "$release/deploy/wait-for-jobs.py" /var/lib/mind/projects.sqlite; fi
+if systemctl is-active --quiet mind.service; then "$node_runtime" "$release/deploy/wait-for-jobs.mjs" /var/lib/mind/projects.sqlite; fi
 transaction=1
 python3 - "$envfile" "$domain" <<'PY'
 import pathlib,sys,os
