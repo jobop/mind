@@ -1,3 +1,4 @@
+import { buildMapContext } from './map-context.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, randomBytes, createHash, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -64,6 +65,7 @@ export class ProjectService {
       CREATE INDEX IF NOT EXISTS project_owner ON projects(owner_id);`);
   }
   close() { this.db.close(); }
+  mapContext(project,mapId,nodeId) { return buildMapContext(project,mapId,nodeId); }
   cookieName(request) { return new URL(request.url).protocol === 'https:' ? '__Host-mind-session' : 'mind-local-session'; }
   token(request) { const prefix = this.cookieName(request) + '='; return (request.headers.get('Cookie') || '').split(';').map(x => x.trim()).find(x => x.startsWith(prefix))?.slice(prefix.length); }
   user(request, required = true) {

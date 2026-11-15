@@ -46,7 +46,7 @@ test('E2B lifecycle starts a fresh isolated VM, brokers model traffic without re
   const mock=mockSandbox(),events=[];
   try {
     const result=await runE2BAgent({apiKey:'platform-e2b-secret',runtimeArchive:archive,connection:{url:'https://api.vendor.com/v1/chat/completions',model:'model',key:'real-model-secret'},job:{project:{id:'p1',name:'项目'}},skills:[{id:'one',name:'方法',content:'正文',files:[]}],sandboxFactory:mock.factory,emit:e=>events.push(e),modelProxy:async connection=>{assert.equal(connection.key,'real-model-secret');return {status:200,contentType:'text/event-stream',body:'data: [DONE]\n\n'};}});
-    assert.equal(mock.state.options.allowInternetAccess,false);assert.equal(mock.state.options.network.allowPublicTraffic,false);assert.equal(mock.state.options.timeoutMs,300000);
+    assert.equal(mock.state.options.allowInternetAccess,false);assert.equal(mock.state.options.network.allowPublicTraffic,false);assert.equal(mock.state.options.timeoutMs,1200000);
     assert.equal(mock.state.options.envs,undefined);assert.equal(mock.state.input.connection.key,'brokered-no-real-key');
     assert.doesNotMatch(JSON.stringify(mock.state.input),/platform-e2b-secret|real-model-secret/);
     assert.equal(mock.state.kills,1);assert.equal(result.agent.sandbox.provider,'e2b');

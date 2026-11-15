@@ -54,8 +54,8 @@ let selected = map().root.id, mode = 'questions', view = 'map';
 let zoom = 1, pan = { x: 0, y: 0 }, layout = new Map(), history = [], future = [];
 let busy = false, generation = null, failedRequest = null, editAction = 'edit', editTarget = null;
 let agentEvents = [], agentTraceMapId = null, agentTraceRunId = null;
-const GENERATION_TIMEOUT_MS = 420000;
-let generationNotice = null;
+const GENERATION_TIMEOUT_MS = 1320000;
+let generationNotice = null, currentAttempt = null;
 let connection = { configured: false }, connecting = false, connectController = null, toastTimer;
 function map() { return workspace.maps.find(m => m.id === workspace.active) || workspace.maps[0]; }
 function find(id, n = map().root, parent = null) {
@@ -214,7 +214,7 @@ function renderInspector() {
   document.querySelectorAll('.gen-type').forEach(button => button.disabled = busy);
   $('modeStatus').textContent = connection.configured ? '● ' + connection.model + ' · 已连接' : '○ 点击连接你的模型';
   $('modeStatus').className = 'mode-status ' + (connection.configured ? 'connected' : 'disconnected');
-  $('generationError').hidden = !failedRequest;
+  $('generationError').hidden = !failedRequest || failedRequest.mapId !== map().id || failedRequest.nodeId !== n.id;
   $('generationErrorText').textContent = failedRequest?.error || '';
   $('retryGenerate').disabled = busy;
   $('generationSource').hidden = !n.generated?.model;
@@ -335,15 +335,16 @@ document.querySelectorAll('.gen-type').forEach(button => button.onclick = () => 
   document.querySelectorAll('.gen-type').forEach(other => other.classList.toggle('active', other === button));
 });
 async function api(path, payload, options = {}) {
-  const response = await fetch(path, {
+  let response;
+  try { response = await fetch(path, {
     method: options.method || (payload === undefined ? 'GET' : 'POST'),
     credentials: 'same-origin', cache: 'no-store', signal: options.signal,
     headers: { 'Content-Type': 'application/json', 'X-Branch-Request': '1' },
     body: payload === undefined ? undefined : JSON.stringify(payload),
-  });
+  }); } catch (cause) { const error = Error('连接暂时中断，请稍后恢复查询'); error.isTransportError = true; error.cause = cause; throw error; }
   let data;
   try { data = await response.json(); } catch { throw Error(response.status === 401 || response.status === 403 ? '登录已过期，请刷新页面重新登录' : '服务器没有返回有效数据，请刷新后重试'); }
-  if (!response.ok) { const error = Error(data.error || '请求失败，请重试'); error.code = data.code; throw error; }
+  if (!response.ok) { const error = Error(data.error || '请求失败，请重试'); error.code = data.code; error.status = response.status; throw error; }
   return data;
 }
 
@@ -362,27 +363,33 @@ function agentSummary(run, prefix = '完成') {
   return text;
 }
 function restoreAgentView(node) {
+  const pinned = currentAttempt?.mapId === map().id && currentAttempt.nodeId === node.id ? currentAttempt : null;
   const requestedRun = node.generated?.agent?.runId;
-  if (agentTraceMapId === map().id && (!requestedRun || requestedRun === agentTraceRunId)) return;
+  if (pinned && agentTraceMapId === map().id && agentTraceRunId === pinned.id) return;
+  if (!pinned && agentTraceMapId === map().id && (!requestedRun || requestedRun === agentTraceRunId)) return;
   agentTraceMapId = map().id;
   const runs = Array.isArray(map().agentRuns) ? map().agentRuns : [];
-  const run = runs.find(r => r.runId === requestedRun) || (requestedRun ? { ...node.generated.agent, steps: [], sources: node.generated.sources || [] } : runs[0]);
-  $('agentTrace').replaceChildren(); $('agentSources').replaceChildren();
-  $('agentPanel').hidden = !run;
+  const run = pinned || runs.find(r => r.nodeId === node.id) || runs.find(r => r.runId === requestedRun) || (requestedRun ? { ...node.generated.agent, steps: [], sources: node.generated.sources || [] } : runs[0]);
+  $('agentTrace').replaceChildren(); $('agentSources').replaceChildren(); $('agentPanel').hidden = !run;
   if (!run) { agentTraceRunId = null; return; }
-  agentTraceRunId = run.runId;
-  $('agentRunStatus').textContent = agentSummary(run, '历史记录');
-  for (const event of (Array.isArray(run.steps) ? run.steps : []).slice(-80)) {
-    if (typeof event.text !== 'string') continue;
-    const item = document.createElement('li'); item.textContent = event.text.slice(0, 2000); if (event.failed && !event.recovered) item.className = 'agent-failed'; $('agentTrace').append(item);
+  agentTraceRunId = pinned ? pinned.id : run.runId;
+  $('agentRunStatus').textContent = pinned ? pinned.status : run.status === 'failed' ? '本次未完成' : agentSummary(run, '历史记录');
+  for (const event of (Array.isArray(run.steps) ? run.steps : []).slice(-120)) {
+    const text = typeof event.text === 'string' ? event.text : agentEventText(event);
+    if (!text) continue;
+    const item = document.createElement('li'); item.textContent = text.slice(0, 2000); if (event.failed && !event.recovered || event.type === 'tool_end' && !event.ok) item.className = 'agent-failed'; $('agentTrace').append(item);
   }
   renderAgentSources(Array.isArray(run.sources) ? run.sources : []);
 }
-function showAgentEvent(event) {
+function agentEventText(event) {
+
   const labels = {
     connected: () => '已连接 Agent 服务',
+    transport_reconnecting: () => '连接暂时中断，正在恢复同一后台任务；不会重复调用模型',
+    task_saved: () => '生成结果已保存到项目，正在同步导图',
     started: () => 'Pi Agent 已启动（最多 ' + event.limits.modelCalls + ' 次模型调用）',
     plan: () => '执行步骤：\n' + event.steps.map((step, i) => (i + 1) + '. ' + step).join('\n'),
+    finishing: () => '已进入最后 ' + event.remaining + ' 轮，正在收尾并提交分支',
     model_request: () => '模型调用 ' + event.call + ' / ' + event.max,
     tool_start: () => '开始：' + event.label,
     tool_end: () => (event.ok ? '完成：' : '工具未成功：') + event.label + (!event.ok && event.reason ? '；原因：' + event.reason : ''),
@@ -393,14 +400,19 @@ function showAgentEvent(event) {
     sandbox_created: () => '独立 E2B 沙箱已创建',
     sandbox_ready: () => 'Skill 文件已就绪，Pi Agent 在沙箱内开始执行',
     sandbox_destroyed: () => '本次任务沙箱已销毁',
-    sandbox_cleanup_pending: () => '沙箱清理请求未确认，将由最长 5 分钟生命周期回收',
+    sandbox_cleanup_pending: () => '沙箱清理请求未确认，将由最长 20 分钟生命周期回收',
+    map_context: () => '已读取导图全局：' + event.totalNodes + ' 个节点；本次展开第 ' + event.selectedNodeIndex + ' 个节点' + (event.omittedNodes ? '（预览省略 ' + event.omittedNodes + ' 个，可按需读取完整树）' : ''),
     skill_catalog: () => '已检索项目 Skill 库 · ' + event.count + ' 个可选方法',
     skill_selected: () => '本次采用 Skill：' + event.name + ' @ ' + event.version,
     source: () => '已读取证据 [' + event.id + '] ' + event.title,
     validation: () => event.valid ? '分支结构与引用校验通过' : '需要修订：' + event.issues.join('；'),
     completed: () => 'Agent 已提交经过校验的分支',
   };
-  if (!labels[event.type]) return;
+  return labels[event.type]?.();
+}
+function showAgentEvent(event) {
+  const text = agentEventText(event);
+  if (!text) return;
   if (event.type === 'tool_recovered') {
     agentEvents.forEach((previous, index) => {
       if (previous.failed && !previous.recovered && previous.tool === event.tool && event.ids?.includes(previous.id)) {
@@ -410,15 +422,16 @@ function showAgentEvent(event) {
       }
     });
   }
-  const text = labels[event.type]();
-  if (agentEvents.length < 80) agentEvents.push({ type: event.type, id: event.id, tool: event.tool, failed: event.type === 'tool_end' && !event.ok, at: event.at || new Date().toISOString(), text: text.slice(0, 2000) });
+  if (agentEvents.length < 240) agentEvents.push({ type: event.type, id: event.id, tool: event.tool, failed: event.type === 'tool_end' && !event.ok, at: event.at || new Date().toISOString(), text: text.slice(0, 2000) });
   const item = document.createElement('li'); item.textContent = text;
   if (event.type === 'tool_end' && !event.ok) item.className = 'agent-failed';
   if (busy && generationNotice) { generationNotice.text = text.replace(/\n/g, ' ').slice(0, 200); renderCanvasGeneration(); }
   $('agentTrace').append(item); $('agentTrace').scrollTop = $('agentTrace').scrollHeight;
   $('agentRunStatus').textContent = event.type === 'completed' ? '已提交' : '执行中';
+  if (currentAttempt) { currentAttempt.steps = agentEvents; currentAttempt.status = $('agentRunStatus').textContent; }
 }
-async function generateWithAgent(payload, signal) {
+async function generateWithAgent(payload, signal, resumeTask) {
+  if (connection.backgroundJobs && payload.projectId || resumeTask) return generateBackgroundJob(payload, signal, resumeTask);
   const response = await fetch('/api/generate', {
     method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
     headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson', 'X-Branch-Request': '1' }, body: JSON.stringify(payload),
@@ -426,7 +439,7 @@ async function generateWithAgent(payload, signal) {
   if (!response.ok || !response.headers?.get('Content-Type')?.includes('application/x-ndjson')) {
     let data;
     try { data = await response.json(); } catch { throw Error('Agent 服务响应无效，请确认本地服务仍在运行'); }
-    if (!response.ok) { const error = Error(data.error || 'Agent 请求失败'); error.code = data.code; throw error; }
+    if (!response.ok) { const error = Error(data.error || 'Agent 请求失败'); error.code = data.code; error.status = response.status; throw error; }
     return data;
   }
   const reader = response.body.getReader(), decoder = new TextDecoder();
@@ -465,21 +478,26 @@ function requestSnapshot() {
       providedSources: (n.generated?.sources || []).slice(0, 5).map(s => ({ url: s.url, title: s.title })), existing: n.children.map(c => c.title), mode, quantity: Number($('branchCount').value), instruction: $('instruction').value.trim() },
   };
 }
-async function generate(snapshot) {
+async function generate(snapshot, resumeTask) {
   if (busy || connecting) return;
   if (projectSession.ready && !projectSession.user) { openAccount(); return toast('请先登录，并选择属于你的项目'); }
   if (projectSession.ready && !projectSession.project) return toast('请先创建或选择项目');
-  if (!connection.configured) { toast('先连接你的模型，就可以开始生成'); openSettings(); return; }
+  if (!connection.configured && !resumeTask) { toast('先连接你的模型，就可以开始生成'); openSettings(); return; }
   const job = snapshot || requestSnapshot();
-  const targetMap = workspace.maps.find(m => m.id === job.mapId);
-  const target = targetMap && find(job.nodeId, targetMap.root)?.node;
+  let targetMap = workspace.maps.find(m => m.id === job.mapId);
+  let target = targetMap && find(job.nodeId, targetMap.root)?.node;
   if (!target || map().id !== job.mapId) return toast('目标节点已变化，请重新选择节点生成');
-  if (!canAdd(target, job.payload.quantity)) return;
+  if (!resumeTask && !canAdd(target, job.payload.quantity)) return;
   // A retry keeps the original target, instruction and direction, while honoring current siblings.
-  job.payload.existing = target.children.map(c => c.title);
+  if (!job.payload.clientRequestId) job.payload.existing = target.children.map(c => c.title);
+  if (connection.backgroundJobs && job.payload.projectId || resumeTask) {
+    job.payload.clientRequestId ||= resumeTask?.clientRequestId || uid();
+    job.payload.mapId = job.mapId; job.payload.nodeId = job.nodeId;
+  }
   busy = true; failedRequest = null; agentEvents = [];
   generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'running', text: '正在保存项目并准备生成…' };
-  agentTraceMapId = map().id; agentTraceRunId = null;
+  currentAttempt = { id: job.payload.clientRequestId || uid(), mapId: job.mapId, nodeId: job.nodeId, status: '连接中', steps: [], sources: [] };
+  agentTraceMapId = map().id; agentTraceRunId = currentAttempt.id;
   $('agentTrace').replaceChildren(); $('agentSources').replaceChildren(); $('agentPanel').hidden = false; $('agentRunStatus').textContent = '连接中';
   const controller = new AbortController();
   generation = { ...job, controller, cancelled: false };
@@ -488,13 +506,18 @@ async function generate(snapshot) {
   render();
   try {
     if (projectSession.project) await flushProjectSave();
-    const result = await generateWithAgent(job.payload, controller.signal);
+    const result = await generateWithAgent(job.payload, controller.signal, resumeTask);
     if (current.cancelled || controller.signal.aborted) return;
     if (!Array.isArray(result.children) || result.children.length !== job.payload.quantity ||
       result.children.some(c => typeof c.title !== 'string' || !c.title.trim() || c.title.length > 80 || typeof c.note !== 'string' || c.note.length > 3000)) throw Error('服务器返回的节点格式不正确，请重试');
-    const seen = new Set(target.children.map(c => c.title.trim().toLowerCase()));
+    const seen = new Set((result.persistedProject ? [] : target.children).map(c => c.title.trim().toLowerCase()));
     for (const c of result.children) { const key = c.title.trim().toLowerCase(); if (seen.has(key)) throw Error('模型返回了重复分支，请重试'); seen.add(key); }
     checkpoint();
+    if (result.persistedProject) {
+      adoptServerProject(result.persistedProject, job.mapId, job.nodeId);
+      targetMap = workspace.maps.find(m => m.id === job.mapId); target = find(job.nodeId, targetMap.root).node;
+      $('saveStatus').textContent = '已保存到个人项目';
+    } else {
     target.children.push(...result.children.map(c => ({ id: uid(), title: c.title.trim(), note: c.note, children: [], generated: { skills: result.skills || [], model: result.model, at: result.generatedAt, direction: job.payload.mode, skill: result.skill || null, agent: result.agent ? { framework: result.agent.framework, version: result.agent.version, runId: result.agent.runId, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls } : null, sources: result.agent?.sources || [] } })));
     target.collapsed = false; selected = target.id;
     if (result.agent) {
@@ -503,14 +526,18 @@ async function generate(snapshot) {
       $('agentRunStatus').textContent = agentSummary(result.agent);
       renderAgentSources(result.agent.sources || []);
     }
+    }
+    if (currentAttempt) { currentAttempt.id = result.agent?.runId || currentAttempt.id; currentAttempt.status = agentSummary(result.agent || {}); currentAttempt.steps = agentEvents; currentAttempt.sources = result.agent?.sources || []; agentTraceRunId = currentAttempt.id; $('agentRunStatus').textContent = currentAttempt.status; renderAgentSources(currentAttempt.sources); }
     generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'success', text: '已新增 ' + result.children.length + ' 个下级节点 · 当前导图共 ' + count(targetMap.root) + ' 个节点' };
-    save(); fitAfterRender = true; toast('已生成 ' + result.children.length + ' 个分支，可点击新节点继续展开');
+    if (!result.persistedProject) save(); fitAfterRender = true; toast('已生成 ' + result.children.length + ' 个分支，可点击新节点继续展开');
   } catch (error) {
-    if (current.cancelled) { generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'idle', text: '已取消生成，原有节点保留' }; $('agentRunStatus').textContent = '已取消'; toast('已取消生成，原有节点已保留'); }
+    if (current.cancelled || error.code === 'CANCELLED') { generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'idle', text: '已取消生成，原有节点保留' }; $('agentRunStatus').textContent = '已取消'; toast('已取消生成，原有节点已保留'); }
     else {
-      const message = error.name === 'AbortError' ? '任务等待超时，未收到完整分支，请查看执行记录后重试' : error instanceof TypeError ? '网络连接中断，请检查网络后重试' : error.message;
+      const message = error.name === 'AbortError' ? job.payload.clientRequestId ? '页面等待已结束，后台任务可在刷新后恢复，请勿重复创建任务' : '任务等待超时，未收到完整分支，请查看执行记录后重试' : error.isTransportError ? '连接暂时中断，后台任务可在刷新后恢复' : error instanceof TypeError ? '页面处理生成结果时出现异常，请刷新恢复任务' : error.message;
       generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'error', text: message };
-      failedRequest = { ...job, error: message }; $('agentRunStatus').textContent = '未完成';
+      if (currentAttempt) { currentAttempt.status = '本次未完成'; currentAttempt.steps = agentEvents; }
+      const retryPayload = { ...job.payload }; if (error.terminal) delete retryPayload.clientRequestId;
+      failedRequest = { ...job, payload: retryPayload, error: message }; $('agentRunStatus').textContent = '本次未完成';
       if (error.code === 'CONNECTION_REQUIRED') connection = { configured: false };
       toast(message);
     }
@@ -525,7 +552,13 @@ $('canvasGenerate').onclick = () => generate(failedRequest && failedRequest.mapI
 $('canvasGenerationDetails').onclick = () => $('agentPanel').scrollIntoView?.({ behavior: 'smooth', block: 'start' });
 $('canvasCancelGeneration').onclick = () => $('cancelGenerate').onclick();
 $('retryGenerate').onclick = () => { if (failedRequest) generate(failedRequest); };
-$('cancelGenerate').onclick = () => { if (generation) { generation.cancelled = true; generation.controller.abort(); } };
+$('cancelGenerate').onclick = async () => {
+  const active = generation; if (!active) return;
+  if (active.payload.clientRequestId && connection.backgroundJobs) {
+    try { const job = await api('/api/generation-jobs/by-request/' + active.payload.clientRequestId + '/cancel', {}); if (job.status === 'succeeded') return toast('任务已完成，正在同步已保存的分支'); } catch { toast('取消请求未确认，后台任务状态会在恢复连接后更新'); return; }
+  }
+  active.cancelled = true; active.controller.abort(); if (currentAttempt) currentAttempt.status = '已取消';
+};
 const presets = {
   deepseek: { base: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
   openai: { base: 'https://api.openai.com/v1', model: 'gpt-4.1-mini' },

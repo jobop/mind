@@ -30,7 +30,7 @@ export async function brokerModel(connection, raw, signal) {
   });
 }
 let active = 0;
-const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready']);
+const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context']);
 export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage }) {
   apiKey = platformE2BKey(apiKey);
   if (!apiKey) throw new AgentRunError('平台尚未配置 E2B 沙箱，请联系维护者配置 E2B_API_KEY', 'AGENT_SANDBOX_NOT_CONFIGURED');
@@ -40,7 +40,7 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
   let sandbox, handle, closed = false, result, failure, buffer = '', chain = Promise.resolve(), modelCalls = 0, pages = 0, eventCount = 0;
   const controller = new AbortController(), cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
-  const timeout = setTimeout(cancel, 270000);
+  const timeout = setTimeout(cancel, 1080000);
   const abort = () => { if (sandbox) sandbox.kill({ requestTimeoutMs: 10000, signal: AbortSignal.timeout(10000) }).catch(() => {}); };
   controller.signal.addEventListener('abort', abort, { once: true });
   const send = message => handle.sendStdin(JSON.stringify(message) + '\n', { requestTimeoutMs: 60000, signal: controller.signal });
@@ -51,7 +51,7 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
       let response;
       try {
         if (message.operation === 'model') {
-          if (++modelCalls > 8) throw Error('模型请求次数超过限制');
+          if (++modelCalls > 20) throw Error('模型请求次数超过限制');
           response = await modelProxy(connection, message.payload?.body, controller.signal);
         } else if (message.operation === 'page') {
           if (++pages > 5) throw Error('网页请求次数超过限制');
@@ -66,18 +66,18 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
       const known = ['AGENT_LIMIT','AGENT_INCOMPLETE','AGENT_TIMEOUT','AGENT_ERROR','AGENT_NO_SKILLS','TOOLS_REQUIRED'].includes(message.code);
       failure = new AgentRunError(known && typeof message.error === 'string' ? message.error.slice(0, 240) : '沙箱 Agent 未完成任务，请检查工具记录后重试', known ? message.code : 'AGENT_SANDBOX_FAILED');
     }
-    else if (allowedEvents.has(message.type) && eventCount++ < 100) emit(message);
+    else if (allowedEvents.has(message.type) && eventCount++ < 250) emit(message);
   }
   try {
     emit({ type: 'sandbox_creating', provider: 'e2b' });
     // Each call creates a new VM. No snapshot/fork of a previous user's task is used.
-    sandbox = await sandboxFactory({ apiKey, ...(template ? { template } : {}), timeoutMs: 300000, requestTimeoutMs: 60000, idempotencyKey: randomUUID(), allowInternetAccess: false, network: { allowPublicTraffic: false }, metadata: { application: 'mind', project: job.project.id } });
+    sandbox = await sandboxFactory({ apiKey, ...(template ? { template } : {}), timeoutMs: 1200000, requestTimeoutMs: 60000, idempotencyKey: randomUUID(), allowInternetAccess: false, network: { allowPublicTraffic: false }, metadata: { application: 'mind', project: job.project.id } });
     controller.signal.throwIfAborted();
     emit({ type: 'sandbox_created', provider: 'e2b', taskId: sandbox.sandboxId });
     const archive = await readFile(runtimeArchive);
     await sandbox.files.write('/home/user/mind-runtime.tar.gz', archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength), { requestTimeoutMs: 90000, signal: controller.signal });
     await sandbox.commands.run('mkdir -p /opt/mind-agent /workspace/task && tar -xzf /home/user/mind-runtime.tar.gz -C /opt/mind-agent && rm -f /home/user/mind-runtime.tar.gz && chown -R user:user /workspace/task && /opt/mind-agent/bin/node --version', { user: 'root', timeoutMs: 60000, signal: controller.signal });
-    handle = await sandbox.commands.run('exec /opt/mind-agent/bin/node /opt/mind-agent/runtime/sandbox-task.mjs', { user: 'user', background: true, stdin: true, timeoutMs: 200000, retainOutput: false, signal: controller.signal, onStderr: () => {}, onStdout: chunk => {
+    handle = await sandbox.commands.run('exec /opt/mind-agent/bin/node /opt/mind-agent/runtime/sandbox-task.mjs', { user: 'user', background: true, stdin: true, timeoutMs: 930000, retainOutput: false, signal: controller.signal, onStderr: () => {}, onStdout: chunk => {
       buffer += chunk;
       if (Buffer.byteLength(buffer) > 2 * 1024 * 1024) { failure = new AgentRunError('沙箱消息超过限制', 'AGENT_SANDBOX_FAILED'); controller.abort(); return; }
       let index;

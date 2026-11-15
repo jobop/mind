@@ -170,3 +170,23 @@ test('a failed filesystem Skill read cannot satisfy the project prerequisite or 
     assert.ok(events.some(e => e.type === 'tool_end' && e.tool === 'validate_branches' && !e.ok));
   } finally { globalThis.fetch = saved; }
 });
+
+test('twenty-round budget reserves the last four rounds and accepts omitted empty references', async () => {
+  const { AGENT_LIMITS } = await import('../runtime/pi-agent.mjs');assert.equal(AGENT_LIMITS.modelCalls,20);
+  const saved=globalThis.fetch,events=[],requests=[];let pages=0;
+  const nodes=children.map(({sourceIds,...node})=>node);
+  const script=[first,...Array.from({length:15},()=>[{name:'read_skill',args:{}}]),[{name:'read_public_page',args:{url:'https://garden.org/extra'}}],[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+  globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+  try{
+    const result=await runPiAgent({connection,job,skill,hub,emit:e=>events.push(e),pageReader:async()=>{pages++;throw Error('Should stop exploring');}});
+    assert.equal(result.agent.modelCalls,19);assert.equal(pages,0);
+    assert.ok(events.some(e=>e.type==='finishing'&&e.remaining===4));
+    assert.ok(requests[16].messages.some(m=>m.role==='user'&&m.content.includes('剩余 4 轮')));
+    assert.equal(result.children.length,3);
+  }finally{globalThis.fetch=saved;}
+});
+test('schema diagnostics name only known fields and never echo candidate contents', async () => {
+  const { publicToolFailure }=await import('../runtime/pi-agent.mjs');
+  const reason=publicToolFailure('validate_branches',{content:[{type:'text',text:'Validation failed for tool "validate_branches":\n - children[0].note: Expected string\n\nReceived arguments:\n{"private":"must-not-leak"}'}]});
+  assert.match(reason,/children\[0\]\.note/);assert.doesNotMatch(reason,/must-not-leak|private/);
+});

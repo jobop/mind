@@ -1,4 +1,4 @@
-// Runs exclusively inside a restricted disposable container; no real model credential enters it.
+// Runs exclusively inside a disposable E2B virtual machine; no real model credential enters it.
 import { createInterface } from 'node:readline';
 import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
@@ -24,6 +24,7 @@ lines.on('line', async line => {
       if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw Error('Skill 文件校验失败');
       await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { mode: 0o600 });
     }
+    if (job.mapContext) await writeFile('/workspace/task/map-context.json', JSON.stringify(job.mapContext), { mode: 0o600 });
     send({ type: 'sandbox_ready', count: skills.length, isolation: 'e2b', network: 'none' });
     // Only this exact provider request is brokered. Arbitrary fetch and script network access are unavailable.
     globalThis.fetch = async (url, options) => {

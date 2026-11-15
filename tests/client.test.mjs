@@ -196,7 +196,7 @@ test('generation locks immediately while a project save is pending and uses the 
   run('releaseSave()'); await pending;
   assert.equal(run('requests'),1); assert.equal(run('count(map().root)'),4);
   assert.match(run("$('canvasGenerationStatus').textContent"), /已新增 3 个下级节点/);
-  assert.ok(delays.includes(420000),'Browser timeout must cover preparation, sandbox runtime and cleanup');
+  assert.ok(delays.includes(1320000),'Browser timeout must cover preparation, sandbox runtime and cleanup');
 });
 test('canvas shows a failed generation and its retry produces visible child nodes', async () => {
   const { run }=app();
@@ -212,4 +212,16 @@ test('canvas shows a failed generation and its retry produces visible child node
   assert.equal(run("$('nodes').children.length"),4);
   assert.equal(run("$('nodeCount').textContent"),'4 个节点');
   assert.match(run("$('canvasGeneration').className"), /is-success/);
+});
+
+test('a new failed expansion cannot be replaced by the selected node previous successful history',async()=>{
+ const {run}=app();
+ run("const child={id:'created-child',title:'已有节点',note:'',children:[],generated:{model:'model',at:'2026-11-15T00:00:00Z',agent:{runId:'old-success',modelCalls:4}}};map().root.children.push(child);map().agentRuns=[{runId:'old-success',modelCalls:4,steps:[{text:'旧任务成功'}],sources:[]}];selected=child.id;agentTraceMapId=null;render();connection={configured:true,model:'model'};fetch=async()=>{throw Error('本次任务连接中断')}");
+ assert.match(run("$('agentRunStatus').textContent"),/历史记录/);
+ await run('generate()');
+ assert.doesNotMatch(run("$('agentRunStatus').textContent"),/历史记录/);
+ assert.match(run("$('canvasGenerationStatus').textContent"),/本次任务连接中断/);
+ run('selected=map().root.id;render();selected="created-child";render()');
+ assert.equal(run("$('agentRunStatus').textContent"),'本次未完成');
+ assert.equal(run("$('agentTrace').children.some(item=>item.textContent==='旧任务成功')"),false);
 });

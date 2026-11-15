@@ -178,7 +178,7 @@ function parseBranches(content, quantity, existing) {
 }
 async function route(request, env) {
   const path = new URL(request.url).pathname;
-  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.0.1', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
+  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.1.0', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
   if (!path.startsWith('/api/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: '不支持的请求方法' }, 405);
     const asset = ASSETS[path === '/index.html' ? '/' : path];
@@ -186,9 +186,10 @@ async function route(request, env) {
   }
   if (env.PROJECT_SERVICE && (path.startsWith('/api/auth/') || path === '/api/projects' || path.startsWith('/api/projects/'))) return env.PROJECT_SERVICE.handle(request);
   if (path === '/api/config' && request.method === 'GET') {
-    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.0.1', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
+    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.1.0', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
   }
   if (env.PROJECT_SERVICE) env.PROJECT_SERVICE.user(request);
+  if (env.GENERATION_JOBS && (path === '/api/generation-jobs' || path.startsWith('/api/generation-jobs/'))) return env.GENERATION_JOBS.handle(request);
   if (path.startsWith('/api/skillhub/')) return skillHubRoute(request, env);
   checkOrigin(request);
   if (path === '/api/connection' && request.method === 'DELETE') {
@@ -261,10 +262,12 @@ async function route(request, env) {
     if (typeof env.AGENT_RUNNER !== 'function') throw new AppError('Pi Agent 运行时未启动，请使用 ZIP 中的启动脚本或 npm start', 503, 'AGENT_NOT_AVAILABLE');
     const providedSources = input.providedSources ?? [];
     if (!Array.isArray(providedSources) || providedSources.length > 5 || providedSources.some(s => !s || typeof s.url !== 'string' || s.url.length > 2000 || typeof s.title !== 'string' || s.title.length > 200)) throw new AppError('参考来源格式不正确');
-    const job = { topic, title, note, brief, instruction, mode: input.mode, quantity: input.quantity, existing: input.existing, ancestors: input.ancestors, ancestorContext: input.ancestors.map((name, i) => ({ title: name, note: (ancestorNotes[i] || '').slice(0, 400) })).slice(-8), providedSources };
-    const release = acquire(request, env);
+    const mapContext = project && input.mapId && input.nodeId ? env.PROJECT_SERVICE.mapContext(project,input.mapId,input.nodeId) : null;
+    const job = { topic: mapContext?.rootTitle || topic, title: mapContext?.target.title || title, note: mapContext?.target.note || note, mapContext, brief, instruction, mode: input.mode, quantity: input.quantity, existing: input.existing, ancestors: input.ancestors, ancestorContext: input.ancestors.map((name, i) => ({ title: name, note: (ancestorNotes[i] || '').slice(0, 400) })).slice(-8), providedSources };
+    const managed = !!env.GENERATION_JOBS && !!input.clientRequestId;
+    const release = managed ? () => {} : acquire(request, env);
     const controller = new AbortController();
-    const signal = AbortSignal.any([request.signal, controller.signal]);
+    let signal = AbortSignal.any([request.signal, controller.signal]);
     async function hubCall(path, payload) {
       const req = new Request(new URL(path, request.url), { method: payload ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', 'X-Branch-Request': '1', Origin: new URL(request.url).origin, 'oai-authenticated-user-id': request.headers.get('oai-authenticated-user-id') || '', 'CF-Connecting-IP': request.headers.get('CF-Connecting-IP') || '' }, body: payload ? JSON.stringify(payload) : undefined, signal });
       const response = await skillHubRoute(req, env), result = await response.json();
@@ -282,6 +285,13 @@ async function route(request, env) {
       const children = parseBranches(JSON.stringify({ children: result.children }), input.quantity, input.existing);
       if (!result.agent || result.agent.framework !== 'pi-agent-core') throw new AppError('Agent 运行结果缺少框架信息', 502, 'INVALID_AGENT_RESULT');
       return { ...result, children };
+    }
+    if (managed) {
+      return env.GENERATION_JOBS.start(request, input, async (emit, jobSignal) => {
+        signal = jobSignal;
+        const done = acquire(request, env);
+        try { return await execute(emit); } finally { done(); }
+      });
     }
     if (request.headers.get('Accept')?.includes('application/x-ndjson')) {
       let closed = false;

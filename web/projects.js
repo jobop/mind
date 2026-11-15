@@ -67,7 +67,9 @@ async function selectProject(id, initial = false) {
   try { localStorage.setItem('mind-active-project:' + projectSession.user.id, project.id); } catch {}
   projectSession.project = project; projectSession.dirty = false; projectSaveError = null;
   workspace = project.workspace; selected = map().root.id; history = []; future = []; failedRequest = null; agentTraceMapId = null;
+  currentAttempt = null;
   renderProjects(); render(); fit(); $('saveStatus').textContent = '已保存到个人项目';
+  if (typeof recoverProjectGeneration === 'function') await recoverProjectGeneration();
 }
 function openAccount() { if (busy || connecting) return toast('请先结束当前操作'); $('authError').hidden = true; $('accountDialog').showModal(); }
 $('accountBtn').onclick = openAccount;

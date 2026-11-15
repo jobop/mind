@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { GenerationJobs } from '../runtime/generation-jobs.mjs';
 import { ProjectService } from '../runtime/projects.mjs';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
@@ -37,7 +38,7 @@ export async function localEnvironment() {
       loadBundle: source => skillHubBundle(source, { SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '' }, new Request('https://mind.internal/api/skillhub/bundle', { signal: preparation })) });
     return runE2BAgent({ apiKey: e2bKey, template: process.env.E2B_TEMPLATE_ID || '', runtimeArchive: fileURLToPath(new URL('../sandbox-runtime.tar.gz', import.meta.url)), ...args, skills: prepared });
   };
-  return { SANDBOX_CONFIGURED: sandboxConfigured, PROJECT_SERVICE: projects, PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN || '', RELEASE_SHA: release, CONNECTION_ENCRYPTION_KEY: secret, SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '', AGENT_RUNNER: agentRunner, AGENT_TEST: testPiConnection };
+  return { GENERATION_JOBS: new GenerationJobs(projects), SANDBOX_CONFIGURED: sandboxConfigured, PROJECT_SERVICE: projects, PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN || '', RELEASE_SHA: release, CONNECTION_ENCRYPTION_KEY: secret, SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '', AGENT_RUNNER: agentRunner, AGENT_TEST: testPiConnection };
 }
 export function createLocalServer(env) {
   let publicOrigin = null;
@@ -106,7 +107,16 @@ const server = http.createServer(async (req, res) => {
 export async function startLocalServer() {
   const port = Number(process.env.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('PORT must be between 1 and 65535');
-  const server = createLocalServer(await localEnvironment());
+  const env = await localEnvironment();
+  const server = createLocalServer(env);
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return; stopping = true; server.close();
+    let timer;
+    await Promise.race([env.GENERATION_JOBS.shutdown(), new Promise(resolve => { timer = setTimeout(resolve, 25000); })]);
+    clearTimeout(timer); server.closeAllConnections(); env.PROJECT_SERVICE.close(); process.exit(0);
+  };
+  process.once('SIGTERM', stop); process.once('SIGINT', stop);
   server.on('error', error => {
     console.error(error.code === 'EADDRINUSE' ? `端口 ${port} 已被占用。请关闭原进程，或设置 PORT 后重试。` : error.message);
     process.exitCode = 1;
