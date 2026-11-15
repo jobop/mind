@@ -45,6 +45,11 @@ finish() {
 }
 trap finish EXIT
 source /etc/os-release
+if [[ $ID == centos && ${VERSION_ID%%.*} == 7 && -f /etc/caddy/Caddyfile ]]; then
+  compat="$incoming/remote-install-centos7.sh"
+  tar -xOf "$archive" ./deploy/remote-install-centos7.sh > "$compat"
+  exec bash "$compat" "$archive" "$domain" "$sha"
+fi
 case "$ID" in ubuntu|debian) ;; *) echo 'Automatic host setup currently supports Ubuntu/Debian with systemd. No application was changed.'; exit 1;; esac
 command -v systemctl >/dev/null || { echo 'systemd is required'; exit 1; }
 if [[ -e $unit ]] && ! grep -q 'managed-by: jobop/mind' "$unit"; then echo 'An unrelated mind.service exists; refusing to overwrite it.'; exit 1; fi

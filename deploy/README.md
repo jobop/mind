@@ -20,7 +20,7 @@
 | ALIYUN_PORT | 22 |
 | MIND_DOMAIN | mind.made-world.link |
 
-自动服务器初始化目前支持 **Ubuntu/Debian + systemd**。SSH 账户需要 root，或由运维调整为等价的受限部署方式。阿里云安全组和服务器防火墙需允许 22、80、443；业务进程仅监听本机 3180。
+服务器初始化支持 **Ubuntu/Debian + systemd + Nginx**；当前实际服务器为 **CentOS 7 + Caddy**，会自动沿用已有 `/opt/node22/bin/node`（已确认 v22.20.0）及 Caddy，不升级系统 Node 或替换其他站点。SSH 账户需要 root，或由运维调整为等价的受限部署方式。阿里云安全组和服务器防火墙需允许 22、80、443；业务进程仅监听本机 3180。
 
 ## 执行
 
@@ -28,7 +28,7 @@
 
 推送 main 或创建 PR 只执行测试；**手动 Run workflow 才部署**。非 main 分支不会获得部署步骤。工作流在同一个 Runner 中安装锁定依赖、构建和执行测试，再打包 Node.js、Pi SDK 及全部运行依赖，经 SCP 直接传包并使用 SSH 部署，不占用 GitHub Artifacts 存储。服务器不需要自行访问 npm 或 GitHub 下载应用依赖。
 
-首次部署会安装必要的 Nginx、Certbot 等系统包，创建专用服务账户 `mind-app`，配置 systemd，并通过 Let's Encrypt 申请 HTTPS 证书与自动续期。域名 DNS 和公网 80/443 可达是证书签发的前提。若目标域名已有另一份 Nginx 配置或已有非本项目的 mind.service，部署会停止，保留原配置供人工合并。
+Ubuntu/Debian 首次部署会安装 Nginx、Certbot；当前 CentOS 7 分支直接使用现有 Caddy 的证书管理。两者均创建专用服务账户 `mind-app` 并配置 systemd。域名 DNS 和公网 80/443 可达是证书签发的前提。若目标域名已有另一份 Nginx 配置或已有非本项目的 mind.service，部署会停止，保留原配置供人工合并。
 
 ## 服务器布局
 
@@ -38,7 +38,8 @@
 - `/var/lib/mind/encryption-key`：跨发布持久保存的连接加密密钥，归专用服务账户所有。
 - `/etc/mind/mind.env`：生产环境设置；追加的其他配置会在升级时保留。
 - `/etc/systemd/system/mind.service`：自动启动与失败重启。
-- `/etc/nginx/conf.d/mind.made-world.link.conf`：专用 HTTPS 反向代理，保留 Agent 流式进度。
+- 当前服务器：`/etc/caddy/mind-sites/mind.made-world.link.caddy` 为专用路由，并从现有 Caddyfile 导入；保留其他站点，使用 100ms 正向刷新间隔以兼顾进度和取消。
+- Ubuntu/Debian：`/etc/nginx/conf.d/mind.made-world.link.conf` 为专用 HTTPS 反向代理。
 
 发布过程先验证新服务的 `/healthz` 与提交 SHA，再配置和验证 HTTPS。失败时恢复上一发布软链接、服务配置和 Nginx 文件；应用的持久加密密钥不会被发布包覆盖。历史发布保留，便于排查或回退；本脚本不自动清理历史版本。
 
