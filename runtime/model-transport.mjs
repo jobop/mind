@@ -45,7 +45,9 @@ export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup
     const decoder=new StringDecoder('utf8'),secret=connection.key||'';let tail='',size=0,body='';
     const redact=(text,last=false)=>{
       tail+=text;if(secret)tail=tail.split(secret).join('[redacted]');
-      const length=last?tail.length:Math.max(0,tail.length-Math.max(0,secret.length-1));
+      // API keys cannot contain newlines. A complete SSE frame is therefore a safe flush boundary.
+      const boundary=Math.max(tail.lastIndexOf('\n'),tail.lastIndexOf('\r'))+1;
+      const length=last?tail.length:Math.max(boundary,tail.length-Math.max(0,secret.length-1));
       const part=tail.slice(0,length);tail=tail.slice(length);
       if(onStream)queue(Buffer.from(part,'utf8'));else body+=part;
     };

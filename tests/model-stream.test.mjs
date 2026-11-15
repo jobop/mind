@@ -57,3 +57,9 @@ test('consumer completion closes only its model request while explicit cancellat
  bridge.handle({type:'rpc_stream_start',id:1,status:200,contentType:'text/event-stream'});const response=await pending;await response.body.cancel();assert.equal(sent.at(-1).reason,'consumer_done');
  const controller=new AbortController(),pending2=bridge.fetchModel(raw,controller.signal);controller.abort();await assert.rejects(pending2,e=>e.name==='AbortError');assert.equal(sent.at(-1).reason,'aborted');
 });
+
+test('a complete SSE DONE frame is delivered immediately even when the upstream HTTP connection stays open',async()=>{
+ const controller=new AbortController(),received=[];
+ const result=await brokerModel(connection,raw,controller.signal,event=>{if(event.type==='chunk'){received.push(event.data);if(Buffer.concat(received).toString().includes('[DONE]'))controller.abort({code:'MODEL_CONSUMER_DONE'});}},{resolve,request:upstream({chunks:[[3,Buffer.from('data: [DONE]\n\n')]],end:300}),timeouts:{firstByteMs:100,idleMs:100,totalMs:500}});
+ assert.equal(result.streamed,true);assert.match(Buffer.concat(received).toString(),/\[DONE\]/);
+});
