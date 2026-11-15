@@ -206,7 +206,7 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
   notify('started', { runId, framework: 'pi-agent-core', version: '1.5.2', limits: { ...limits } });
   try {
     checkAbort();
-    await agent.prompt(JSON.stringify({ task: '按领域Skill展开当前脑图节点', topic: job.topic, selectedNode: job.title, direction: job.mode, quantity: job.quantity, instruction: job.instruction, selectedSkill: skill.name }));
+    await agent.prompt(JSON.stringify({ task: '按领域Skill展开当前脑图节点', topic: job.topic, selectedNode: job.title, direction: job.mode, quantity: job.quantity, instruction: job.instruction, ...(projectScoped ? { project: job.project || null, skillSelection: '先检索项目 Skill 目录，再根据节点任务选择并读取相关方法' } : { selectedSkill: skill.name }) }));
     checkAbort();
     if (exhausted) throw new AgentRunError('已达到本次执行预算，未写入任何新节点', 'AGENT_LIMIT');
     if (protocolFailed) throw new AgentRunError('模型没有按工具协议执行任务，请换用支持工具调用的模型', 'TOOLS_REQUIRED');

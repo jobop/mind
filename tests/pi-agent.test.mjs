@@ -139,7 +139,7 @@ test('project Agent lists the isolated catalogue, selects multiple methods and n
     return sseMessage(script.shift());
   };
   try {
-    const result = await runPiAgent({ connection, job: { ...job, project: { id: 'project1', name: '游戏项目' } }, skill, skills, hub, emit: e => events.push(e) });
+    const result = await runPiAgent({ connection, job: { ...job, project: { id: 'project1', name: '游戏项目' } }, skills, hub, emit: e => events.push(e) });
     assert.deepEqual(result.agent.selectedSkills.map(s => s.id), ['design','research']); assert.equal(result.agent.projectId, 'project1');
     assert.equal(events.filter(e => e.type === 'skill_selected').length, 2);
     assert.ok(requests[1].messages.some(m => m.role === 'tool' && m.content.includes('用户研究')));
