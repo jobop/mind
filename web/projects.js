@@ -17,6 +17,7 @@ function renderProjects() {
   $('projectOwner').textContent = projectSession.user ? projectSession.user.username + ' 的个人项目' : '登录后保存到个人项目';
   $('mobileProjectName').textContent = projectSession.project?.name || '个人项目';
   $('projectNameLabel').textContent = projectSession.project?.name || '本地导图 · 待迁移';
+  $('mobileMigrateLocal').hidden = !projectSession.user;
   $('migrateLocal').hidden = !projectSession.user;
   $('projectSkillsBtn').disabled = !projectSession.project || busy;
 }
@@ -219,3 +220,5 @@ $('mobileAccountBtn').onclick = openAccount;
 
 $('projectManageNew').onclick = () => { $('projectSkillsDialog').close(); openNewProject(); };
 $('projectManageSelect').onchange = async e => { try { await selectProject(e.target.value); $('projectSkillsDialog').close(); openProjectSkills(); } catch (error) { toast(error.message); renderProjects(); } };
+
+$('mobileMigrateLocal').onclick = async () => { $('accountDialog').close(); await $('migrateLocal').onclick(); };

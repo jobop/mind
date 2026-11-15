@@ -109,12 +109,21 @@ if [[ -f $incoming/e2b-settings.json ]]; then
 import json,pathlib,sys,os,re
 values=json.load(open(sys.argv[1]));p=pathlib.Path(sys.argv[2])
 allowed={key:str(values[key]) for key in ['E2B_API_KEY','E2B_TEMPLATE_ID'] if key in values}
-if any(len(v)>1000 or re.search(r'[^a-zA-Z0-9_./:@+-]',v) for v in allowed.values()):raise SystemExit('Invalid E2B environment values')
+if any(len(v)>1000 or re.search(r'[^a-zA-Z0-9_./:@+=-]',v) for v in allowed.values()):raise SystemExit('Invalid E2B environment values')
 lines=[line for line in p.read_text().splitlines() if line.split('=',1)[0] not in allowed]
 temp=p.with_suffix('.e2b-new');temp.write_text('\n'.join(lines+[key+'='+value for key,value in allowed.items()])+'\n');os.chmod(str(temp),0o600);os.replace(str(temp),str(p))
 PYE2B
   rm -f "$incoming/e2b-settings.json"
 fi
+python3 - "$envfile" "$node_runtime" "$release" <<'PYCHECK'
+import os,sys,subprocess
+env={'PATH':'/usr/bin:/bin'}
+for line in open(sys.argv[1]):
+ key,sep,value=line.strip().partition('=')
+ if sep and key in ['E2B_API_KEY','E2B_TEMPLATE_ID']:env[key]=value
+if env.get('E2B_API_KEY'):
+ subprocess.run(['runuser','-u','mind-app','--',sys.argv[2],'scripts/check-platform-e2b.mjs'],cwd=sys.argv[3],env=env,check=True,timeout=100)
+PYCHECK
 cat > "$unit" <<UNIT
 # managed-by: jobop/mind
 [Unit]

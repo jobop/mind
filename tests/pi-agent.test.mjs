@@ -158,3 +158,15 @@ test('a foreign Skill ID cannot be read and cannot satisfy the project generatio
     assert.equal(events.some(e => e.type === 'skill_selected'), false);
   } finally { globalThis.fetch = saved; }
 });
+
+test('a failed filesystem Skill read cannot satisfy the project prerequisite or appear as an adopted Skill', async () => {
+  const saved = globalThis.fetch, events = [];
+  const nodes = children.map(c => ({ ...c, sourceIds: [] }));
+  const script = [[first[0], first[1], { name: 'list_project_skills', args: {} }], [{ name: 'read_skill', args: { id: 'allowed' } }], [{ name: 'validate_branches', args: { children: nodes } }]];
+  globalThis.fetch = async () => sseMessage(script.shift());
+  try {
+    await assert.rejects(runPiAgent({ connection, job, skill, skills: [{ ...skill, id: 'allowed' }], skillLoader: async () => { throw Error('file missing'); }, hub, emit: e => events.push(e), limits: { modelCalls: 3, toolCalls: 20, pages: 5, timeoutMs: 5000 } }), e => e.code === 'AGENT_LIMIT');
+    assert.equal(events.some(e => e.type === 'skill_selected'), false);
+    assert.ok(events.some(e => e.type === 'tool_end' && e.tool === 'validate_branches' && !e.ok));
+  } finally { globalThis.fetch = saved; }
+});

@@ -85,3 +85,18 @@ test('upstream failures are readable errors and cross-origin reads are rejected'
     assert.equal((await call('/api/skillhub/read', { slug: 'x' }, { Origin: 'https://evil.com' })).status, 403);
   } finally { globalThis.fetch = saved; }
 });
+
+test('task bundles include verified scripts and reject paths that could escape a Skill directory', async () => {
+  const { skillHubBundle } = await import('../dist/server/index.js');
+  const saved = globalThis.fetch, script = Buffer.from('print("task-local")\n');
+  const scriptHash = createHash('sha256').update(script).digest('hex');
+  const request = new Request(origin + '/api/skillhub/bundle');
+  try {
+    globalThis.fetch = async url => new URL(url).pathname.endsWith('/files') ? Response.json({ files: [{ path: 'scripts/check.py', size: script.length, sha256: scriptHash }] }) : new Response(script);
+    const bundle = await skillHubBundle({ slug: 'product-method', version: '1.0.0' }, env, request);
+    assert.equal(bundle.files[0].path, 'scripts/check.py');
+    assert.deepEqual(Buffer.from(bundle.files[0].base64, 'base64'), script);
+    globalThis.fetch = async () => Response.json({ files: [{ path: '../../escape.py', size: script.length, sha256: scriptHash }] });
+    await assert.rejects(skillHubBundle({ slug: 'product-method', version: '1.0.0' }, env, request), /路径/);
+  } finally { globalThis.fetch = saved; }
+});
