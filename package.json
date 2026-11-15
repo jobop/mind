@@ -1,0 +1,21 @@
+{
+  "name": "branch-ai-mindmap",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/test.mjs",
+    "start": "node scripts/bootstrap.mjs",
+    "start:production": "node scripts/local-server.mjs",
+    "package:release": "node deploy/package-release.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "ipaddr.js": "2.3.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
