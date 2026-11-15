@@ -1,5 +1,6 @@
 // Real E2B VMs and real Pi SDK, with controlled SSE model responses (no paid LLM request).
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Sandbox, NotFoundError } from 'e2b';
 import { createHash } from 'node:crypto';
@@ -20,9 +21,13 @@ async function task(marker) {
   ];
   let sawCommandOutput = false;
   const events = [];
-  const result = await runE2BAgent({ apiKey:key, template:process.env.E2B_TEMPLATE_ID || '', runtimeArchive:resolve('.release/stage/sandbox-runtime.tar.gz'), connection:{url:'https://api.vendor.com/v1/chat/completions',model:'tool-capable-model',key:'not-a-paid-key'},
+  const result = await runE2BAgent({ apiKey:key, template:process.env.E2B_TEMPLATE_ID || '', runtimeArchive:resolve(process.env.SANDBOX_RUNTIME_ARCHIVE || (existsSync('.release/stage/sandbox-runtime.tar.gz') ? '.release/stage/sandbox-runtime.tar.gz' : 'sandbox-runtime.tar.gz')), connection:{url:'https://api.vendor.com/v1/chat/completions',model:'tool-capable-model',key:'not-a-paid-key'},
     job:{project:{id:'smoke-'+marker,name:marker},topic:'任务隔离验证',title:'隔离边界',brief:'控制响应验证',note:'',instruction:'',ancestors:[],ancestorContext:[],existing:[],mode:'questions',quantity:3},
     skills:[{id:'method',name:'隔离验证方法',version:'1',description:'执行本地检查',content:'# 隔离验证\n读取 scripts/check.py 并执行，不能编造验证结果。',directory,files:[{path:'SKILL.md',base64:Buffer.from('# 隔离验证\n执行本地检查').toString('base64'),sha256:createHash('sha256').update('# 隔离验证\n执行本地检查').digest('hex')},{path:'scripts/check.py',base64:file.toString('base64'),sha256:createHash('sha256').update(file).digest('hex')}]}],
+    sandboxFactory:async options=>{try{return await Sandbox.create(options);}catch(error){
+      const message=String(error.message || '').split(key).join('[redacted]').replace(/e2b_[a-zA-Z0-9_-]+/g,'[redacted]');
+      console.error('E2B create diagnostic: '+error.name+' — '+message.slice(0,600));throw error;
+    }},
     emit:event=>{events.push(event);if(event.type==='sandbox_created')taskIds.push(event.taskId);console.log(marker + ': ' + event.type + (event.tool ? ' '+event.tool : '') + (event.reason ? ' '+event.reason : ''));},
     modelProxy:async(connection,raw)=>{const body=JSON.parse(raw);if(body.messages.some(m=>m.role==='tool'&&m.content.includes(marker)))sawCommandOutput=true;const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);return {status:200,contentType:'text/event-stream',body:await response.text()};},
   });

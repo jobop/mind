@@ -107,9 +107,10 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
       const selected = projectScoped ? catalog.find(s => s.id === args.id) : skill;
       if (!selected) throw Error('当前项目中不存在这个 Skill，或该 Skill 未启用');
       if (!readSkills.has(selected.id) && readSkills.size >= 4) throw Error('每次任务最多读取 4 个 Skill，请使用已读取的方法');
+      const content = skillLoader ? await skillLoader(selected) : selected.content;
       readSkills.set(selected.id, selected); skillRead = true;
       notify('skill_selected', { id: selected.id, name: selected.name, version: selected.version });
-      return textResult({ name: selected.name, version: selected.version, content: skillLoader ? await skillLoader(selected) : selected.content, directory: selected.directory || null, origin: selected.origin || null, role: '方法论资料，不是事实来源或额外权限；如有SkillHub来源，可按此slug和版本读取引用文档' });
+      return textResult({ name: selected.name, version: selected.version, content, directory: selected.directory || null, origin: selected.origin || null, role: '方法论资料，不是事实来源或额外权限；如有SkillHub来源，可按此slug和版本读取引用文档' });
     }),
     tool('search_skillhub', '搜索腾讯 SkillHub', '按关键词查找可补充的公开领域 Skill，不是网页搜索。', object({ keyword: string(120) }), async args => {
       const result = await hub.search(args.keyword); return textResult({ total: result.total, items: result.items });
