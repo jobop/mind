@@ -89,3 +89,9 @@ test('wire, individual SSE event and token budgets are independent limits',async
  const request=(url,options,callback)=>{const req=base(url,options,callback),end=req.end;req.end=payload=>{requested=JSON.parse(payload).max_tokens;end(payload);};return req;};
  await brokerModel({...connection,maxOutputTokens:16384},JSON.stringify({messages:[],tools:[],max_tokens:16384}),undefined,()=>{},{resolve,request});assert.equal(requested,16384);
 });
+
+test('slow sandbox relay backpressure is not misreported as an idle upstream model',async()=>{
+ const frame='data: '+JSON.stringify({text:'x'.repeat(70000)})+'\n\n';
+ const result=await brokerModel(connection,raw,undefined,async event=>{if(event.type==='chunk')await new Promise(resolve=>setTimeout(resolve,70));},{resolve,request:upstream({chunks:[[1,Buffer.from(frame)]],end:15}),timeouts:{firstByteMs:100,idleMs:20,totalMs:400}});
+ assert.equal(result.streamed,true);
+});

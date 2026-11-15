@@ -63,7 +63,12 @@ export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup
       size+=chunk.length;if(size>limits.wireBytes)throw new ModelTransportError('AGENT_MODEL_RESPONSE_LIMIT','模型 SSE 累计传输量超过平台上限（默认 64 MiB，包含事件开销），并非模型 token 上限');
       if(!onStream&&size>limits.bufferedBytes)throw new ModelTransportError('AGENT_MODEL_BUFFER_LIMIT','非流式兼容调用超过缓冲上限，请使用流式转发');
       const text=decoder.write(chunk);checkEvents(text);redact(text);
-      if(queuedBytes>=limits.relayQueueBytes)await sendChain;
+      if(queuedBytes>=limits.relayQueueBytes){
+        // Time waiting for the sandbox to consume buffered data is not upstream inactivity.
+        // The request's total deadline and relay timeout still apply throughout.
+        clearTimeout(idleTimer);await sendChain;
+        if(!controller.signal.aborted)idleTimer=setTimeout(()=>timed('AGENT_MODEL_IDLE_TIMEOUT','模型流式响应已开始，但连续 180 秒没有新数据'),timeouts.idleMs);
+      }
     }
     clearTimeout(firstTimer);clearTimeout(idleTimer);
     redact(decoder.end(),true);flush();await sendChain;
