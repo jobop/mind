@@ -54,6 +54,7 @@ jobs:
             .release/mind-release.tar.gz
             .release/mind-release.sha256
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
   deploy:
