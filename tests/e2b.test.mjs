@@ -31,7 +31,7 @@ function mockSandbox(mode = 'success') {
       const message=JSON.parse(line);
       if(message.type==='start') {
         callbacks.onStdout(JSON.stringify({type:'sandbox_ready',count:1})+'\n');
-        if(mode==='failure') { callbacks.onStdout(JSON.stringify({type:'error'})+'\n'); finish(); }
+        if(mode==='failure'||mode==='budget') { callbacks.onStdout(JSON.stringify(mode==='budget'?{type:'error',code:'AGENT_LIMIT',error:'已达到本次执行预算，未写入任何新节点'}:{type:'error'})+'\n'); finish(); }
         else if(mode==='success') callbacks.onStdout(JSON.stringify({type:'rpc',id:1,operation:'model',payload:{body:'{"messages":[],"tools":[]}'}})+'\n');
       } else if(message.type==='rpc_result') {
         callbacks.onStdout(JSON.stringify({type:'result',result:{children:[],agent:{framework:'pi-agent-core'}}})+'\n');finish();
@@ -57,10 +57,10 @@ test('E2B lifecycle starts a fresh isolated VM, brokers model traffic without re
 test('task failure, cancellation and runtime-upload failure all trigger sandbox cleanup',async()=>{
   const directory=await mkdtemp(join(tmpdir(),'mind-e2b-cleanup-')),archive=join(directory,'runtime.tar.gz');await writeFile(archive,'test archive');
   try{
-    for(const mode of ['failure','cancel','missing-runtime']){
+    for(const mode of ['failure','cancel','missing-runtime','budget']){
       const mock=mockSandbox(mode),controller=new AbortController();
       const run=runE2BAgent({apiKey:'platform',runtimeArchive:mode==='missing-runtime'?join(directory,'missing'):archive,connection:{url:'https://api.vendor.com/v1/chat/completions',model:'m',key:'secret'},job:{project:{id:'p'}},skills:[{}],sandboxFactory:mock.factory,signal:controller.signal,emit:event=>{if(mode==='cancel'&&event.type==='sandbox_ready')controller.abort();}});
-      await assert.rejects(run,error=>error.code===(mode==='cancel'?'CANCELLED':'AGENT_SANDBOX_FAILED'));
+      await assert.rejects(run,error=>error.code===(mode==='cancel'?'CANCELLED':mode==='budget'?'AGENT_LIMIT':'AGENT_SANDBOX_FAILED'));
       assert.ok(mock.state.kills>=1,mode);
     }
   }finally{await rm(directory,{recursive:true,force:true});}

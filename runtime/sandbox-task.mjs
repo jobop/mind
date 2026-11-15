@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { runPiAgent } from './pi-agent.mjs';
+import { runPiAgent, AgentRunError } from './pi-agent.mjs';
 import { sandboxTools } from './sandbox-tools.mjs';
 const pending = new Map(); let sequence = 0, started = false;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
@@ -34,5 +34,5 @@ lines.on('line', async line => {
     const controller = new AbortController();
     const result = await runPiAgent({ connection, job, skills, emit: send, signal: controller.signal, executionTools: sandboxTools(controller.signal), skillLoader: async skill => readFile(resolve('/workspace/task', skill.directory, 'SKILL.md'), 'utf8'), pageReader: (url) => rpc('page', { url }) });
     await new Promise(done => process.stdout.write(JSON.stringify({ type: 'result', result }) + '\n', done)); process.exit(0);
-  } catch { await new Promise(done => process.stdout.write(JSON.stringify({ type: 'error', error: '沙箱 Agent 未完成任务，请检查工具记录后重试', code: 'AGENT_SANDBOX_FAILED' }) + '\n', done)); process.exit(1); }
+  } catch (error) { const known = error instanceof AgentRunError; await new Promise(done => process.stdout.write(JSON.stringify({ type: 'error', error: known ? error.message : '沙箱 Agent 未完成任务，请检查工具记录后重试', code: known ? error.code : 'AGENT_SANDBOX_FAILED' }) + '\n', done)); process.exit(1); }
 });

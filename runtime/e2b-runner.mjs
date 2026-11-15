@@ -62,7 +62,10 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
     } else if (message.type === 'result') {
       if (Buffer.byteLength(JSON.stringify(message.result)) > 600000) throw Error('任务结果超过限制');
       result = message.result;
-    } else if (message.type === 'error') failure = new AgentRunError('沙箱 Agent 未完成任务，请检查工具记录后重试', 'AGENT_SANDBOX_FAILED');
+    } else if (message.type === 'error') {
+      const known = ['AGENT_LIMIT','AGENT_INCOMPLETE','AGENT_TIMEOUT','AGENT_ERROR','AGENT_NO_SKILLS','TOOLS_REQUIRED'].includes(message.code);
+      failure = new AgentRunError(known && typeof message.error === 'string' ? message.error.slice(0, 240) : '沙箱 Agent 未完成任务，请检查工具记录后重试', known ? message.code : 'AGENT_SANDBOX_FAILED');
+    }
     else if (allowedEvents.has(message.type) && eventCount++ < 100) emit(message);
   }
   try {

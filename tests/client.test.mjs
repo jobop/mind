@@ -185,3 +185,31 @@ test('tool failure reasons and recovery status survive history restoration', () 
   assert.match(run("$('agentTrace').children[0].textContent"), /后续已修复/);
   assert.match(run("agentSummary({modelCalls:3,unresolvedFailures:1})"), /1 次工具失败未恢复/);
 });
+
+test('generation locks immediately while a project save is pending and uses the complete sandbox budget', async () => {
+  const { run, context } = app(); const delays=[]; context.setTimeout=(fn,ms)=>{delays.push(ms);return 0;};
+  run("projectSession={ready:true,user:{id:'owner'},project:{id:'project',skills:[],brief:''}};connection={configured:true,model:'model'};let releaseSave;let requests=0;globalThis.flushProjectSave=()=>new Promise(resolve=>releaseSave=resolve);globalThis.scheduleProjectSave=()=>{};fetch=async()=>{requests++;return {ok:true,json:async()=>({children:['甲','乙','丙'].map(title=>({title,note:'说明'})),model:'model'})}};");
+  const pending=run('generate()');
+  assert.equal(run('busy'),true);
+  await run('generate()');
+  assert.equal(run('requests'),0);
+  run('releaseSave()'); await pending;
+  assert.equal(run('requests'),1); assert.equal(run('count(map().root)'),4);
+  assert.match(run("$('canvasGenerationStatus').textContent"), /已新增 3 个下级节点/);
+  assert.ok(delays.includes(420000),'Browser timeout must cover preparation, sandbox runtime and cleanup');
+});
+test('canvas shows a failed generation and its retry produces visible child nodes', async () => {
+  const { run }=app();
+  run("connection={configured:true,model:'model'};fetch=async()=>{throw Error('连接中断，请重试')}");
+  await run("$('canvasGenerate').onclick()");
+  assert.equal(run('count(map().root)'),1);
+  assert.match(run("$('canvasGenerationStatus').textContent"),/连接中断/);
+  assert.equal(run("$('canvasGenerate').textContent"),'重试生成');
+  assert.equal(run("$('canvasGenerationDetails').hidden"),false);
+  run("fetch=async()=>({ok:true,json:async()=>({children:['问题一','问题二','问题三'].map(title=>({title,note:'详细内容'})),model:'model'})})");
+  await run("$('canvasGenerate').onclick()");
+  assert.equal(run('count(map().root)'),4);
+  assert.equal(run("$('nodes').children.length"),4);
+  assert.equal(run("$('nodeCount').textContent"),'4 个节点');
+  assert.match(run("$('canvasGeneration').className"), /is-success/);
+});

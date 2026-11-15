@@ -54,6 +54,8 @@ let selected = map().root.id, mode = 'questions', view = 'map';
 let zoom = 1, pan = { x: 0, y: 0 }, layout = new Map(), history = [], future = [];
 let busy = false, generation = null, failedRequest = null, editAction = 'edit', editTarget = null;
 let agentEvents = [], agentTraceMapId = null, agentTraceRunId = null;
+const GENERATION_TIMEOUT_MS = 420000;
+let generationNotice = null;
 let connection = { configured: false }, connecting = false, connectController = null, toastTimer;
 function map() { return workspace.maps.find(m => m.id === workspace.active) || workspace.maps[0]; }
 function find(id, n = map().root, parent = null) {
@@ -221,6 +223,19 @@ function renderInspector() {
   $('skillSettings').disabled = busy;
   $('skillContext').disabled = busy;
   if (!busy) restoreAgentView(n);
+  renderCanvasGeneration();
+}
+function renderCanvasGeneration() {
+  const n = find(selected)?.node;
+  if (!n) return;
+  const notice = generationNotice?.mapId === map().id && (generationNotice.nodeId === selected || busy) ? generationNotice : null;
+  const text = notice?.text || (n.children.length ? '当前节点有 ' + n.children.length + ' 个下级节点，可继续展开' : '点击「展开下一级」，让 Agent 为选中节点生成分支');
+  $('canvasGenerationStatus').textContent = text;
+  $('canvasGeneration').className = 'canvas-generation' + (notice ? ' is-' + notice.state : '');
+  $('canvasGenerate').disabled = busy || connecting;
+  $('canvasGenerate').textContent = busy ? '正在生成…' : notice?.state === 'error' ? '重试生成' : '✧ 展开下一级';
+  $('canvasGenerationDetails').hidden = !notice || !['running', 'error'].includes(notice.state);
+  $('canvasCancelGeneration').hidden = !busy;
 }
 function renderOutline() {
   $('outline').replaceChildren();
@@ -288,7 +303,7 @@ $('editForm').onsubmit = event => {
   else if (editAction === 'child') {
     const parent = find(editTarget).node, child = { id: uid(), title, note, children: [] };
     parent.children.push(child); parent.collapsed = false; selected = child.id;
-  } else { const n = find(editTarget).node; n.title = title; n.note = note; }
+  } else { const n = find(editTarget).node; if (n === map().root && map().title === n.title) map().title = title; n.title = title; n.note = note; }
   $('editDialog').close(); failedRequest = null; commit(); fit();
 };
 $('newMap').onclick = () => openEdit('new'); $('mobileNewMap').onclick = () => openEdit('new');
@@ -399,6 +414,7 @@ function showAgentEvent(event) {
   if (agentEvents.length < 80) agentEvents.push({ type: event.type, id: event.id, tool: event.tool, failed: event.type === 'tool_end' && !event.ok, at: event.at || new Date().toISOString(), text: text.slice(0, 2000) });
   const item = document.createElement('li'); item.textContent = text;
   if (event.type === 'tool_end' && !event.ok) item.className = 'agent-failed';
+  if (busy && generationNotice) { generationNotice.text = text.replace(/\n/g, ' ').slice(0, 200); renderCanvasGeneration(); }
   $('agentTrace').append(item); $('agentTrace').scrollTop = $('agentTrace').scrollHeight;
   $('agentRunStatus').textContent = event.type === 'completed' ? '已提交' : '执行中';
 }
@@ -453,7 +469,6 @@ async function generate(snapshot) {
   if (busy || connecting) return;
   if (projectSession.ready && !projectSession.user) { openAccount(); return toast('请先登录，并选择属于你的项目'); }
   if (projectSession.ready && !projectSession.project) return toast('请先创建或选择项目');
-  if (projectSession.project) { try { await flushProjectSave(); } catch (error) { return toast('保存项目后才能生成：' + error.message); } }
   if (!connection.configured) { toast('先连接你的模型，就可以开始生成'); openSettings(); return; }
   const job = snapshot || requestSnapshot();
   const targetMap = workspace.maps.find(m => m.id === job.mapId);
@@ -463,14 +478,16 @@ async function generate(snapshot) {
   // A retry keeps the original target, instruction and direction, while honoring current siblings.
   job.payload.existing = target.children.map(c => c.title);
   busy = true; failedRequest = null; agentEvents = [];
+  generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'running', text: '正在保存项目并准备生成…' };
   agentTraceMapId = map().id; agentTraceRunId = null;
   $('agentTrace').replaceChildren(); $('agentSources').replaceChildren(); $('agentPanel').hidden = false; $('agentRunStatus').textContent = '连接中';
   const controller = new AbortController();
   generation = { ...job, controller, cancelled: false };
   const current = generation;
-  const timeout = setTimeout(() => controller.abort(), 195000);
+  const timeout = setTimeout(() => controller.abort(), GENERATION_TIMEOUT_MS);
   render();
   try {
+    if (projectSession.project) await flushProjectSave();
     const result = await generateWithAgent(job.payload, controller.signal);
     if (current.cancelled || controller.signal.aborted) return;
     if (!Array.isArray(result.children) || result.children.length !== job.payload.quantity ||
@@ -486,11 +503,13 @@ async function generate(snapshot) {
       $('agentRunStatus').textContent = agentSummary(result.agent);
       renderAgentSources(result.agent.sources || []);
     }
+    generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'success', text: '已新增 ' + result.children.length + ' 个下级节点 · 当前导图共 ' + count(targetMap.root) + ' 个节点' };
     save(); fitAfterRender = true; toast('已生成 ' + result.children.length + ' 个分支，可点击新节点继续展开');
   } catch (error) {
-    if (current.cancelled) { $('agentRunStatus').textContent = '已取消'; toast('已取消生成，原有节点已保留'); }
+    if (current.cancelled) { generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'idle', text: '已取消生成，原有节点保留' }; $('agentRunStatus').textContent = '已取消'; toast('已取消生成，原有节点已保留'); }
     else {
-      const message = error.name === 'AbortError' ? '模型响应超时，请重试' : error instanceof TypeError ? '网络连接中断，请检查网络后重试' : error.message;
+      const message = error.name === 'AbortError' ? '任务等待超时，未收到完整分支，请查看执行记录后重试' : error instanceof TypeError ? '网络连接中断，请检查网络后重试' : error.message;
+      generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'error', text: message };
       failedRequest = { ...job, error: message }; $('agentRunStatus').textContent = '未完成';
       if (error.code === 'CONNECTION_REQUIRED') connection = { configured: false };
       toast(message);
@@ -502,6 +521,9 @@ async function generate(snapshot) {
 }
 let fitAfterRender = false;
 $('generateBtn').onclick = () => generate();
+$('canvasGenerate').onclick = () => generate(failedRequest && failedRequest.mapId === map().id && failedRequest.nodeId === selected ? failedRequest : undefined);
+$('canvasGenerationDetails').onclick = () => $('agentPanel').scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+$('canvasCancelGeneration').onclick = () => $('cancelGenerate').onclick();
 $('retryGenerate').onclick = () => { if (failedRequest) generate(failedRequest); };
 $('cancelGenerate').onclick = () => { if (generation) { generation.cancelled = true; generation.controller.abort(); } };
 const presets = {
