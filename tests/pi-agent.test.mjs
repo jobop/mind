@@ -228,3 +228,76 @@ test('public webpage failures expose safe actionable categories instead of raw p
  const {PublicPageError}=await import('../runtime/public-page.mjs');
  await assert.rejects(readPublicPage('https://example.org',undefined,{request:async()=>{throw Object.assign(Error('private request data'),{code:'ENOTFOUND'});}}),e=>e instanceof PublicPageError&&e.code==='PAGE_DNS'&&!e.message.includes('private'));
 });
+
+test('more than eight distinct repository files can be read and duplicate paths reuse the original evidence',async()=>{
+ const saved=globalThis.fetch,requests=[],reads=[];
+ const resource={id:'repo',type:'git',name:'游戏仓库',url:'https://github.com/team/game',description:''};
+ const scoped={...job,mapContext:{target:{id:'node',index:1,resources:[resource]},nodes:[{id:'node',resources:[resource]}],overview:{outline:[],references:[resource]}}};
+ const script=[first,Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:'repo',path:'file-'+i+'.md'}})),[{name:'read_reference',args:{id:'repo',path:'./file-0.md'}},{name:'read_reference',args:{id:'repo',path:'file-0.md'}}],[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+ globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+ try{
+  const result=await runPiAgent({connection,job:scoped,skill,hub,referenceReader:async(id,args)=>{reads.push(args.path);return {title:args.path,url:resource.url,text:'Repository content '+args.path};}});
+  assert.equal(reads.length,10);assert.equal(result.agent.referenceReads,10);assert.equal(result.agent.sources.length,10);
+  const cached=requests[3].messages.filter(m=>m.role==='tool').map(m=>{try{return JSON.parse(m.content);}catch{return {};}}).filter(m=>m.cached);
+  assert.equal(cached.length,2);assert.ok(cached.every(m=>m.id==='S1'&&!m.text));
+ }finally{globalThis.fetch=saved;}
+});
+test('repeated resource reads trigger a submission phase with exploration tools removed',async()=>{
+ const saved=globalThis.fetch,requests=[],events=[];let reads=0;
+ const scoped={...job,mapContext:{target:{id:'node',index:1},nodes:[{id:'node',resources:[{id:'repo'}]}],overview:{outline:[]}}};
+ const script=[first,Array.from({length:4},()=>({name:'read_reference',args:{id:'repo',path:'README.md'}})),[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+ globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+ try{
+  const result=await runPiAgent({connection,job:scoped,skill,hub,emit:e=>events.push(e),referenceReader:async()=>{reads++;return {title:'仓库说明',url:'https://github.com/team/game',text:'实际仓库内容'};}});
+  assert.equal(reads,1);assert.equal(result.agent.sources.length,1);assert.ok(events.some(e=>e.type==='finishing'&&e.reason==='repeated_reference'));
+  const tools=requests[2].tools.map(t=>t.function.name);assert.ok(tools.includes('validate_branches'));assert.ok(!tools.includes('read_reference'));assert.ok(!tools.includes('read_public_page'));
+ }finally{globalThis.fetch=saved;}
+});
+test('a repeated unavailable path is not fetched again and cannot be marked as repaired evidence',async()=>{
+ const saved=globalThis.fetch,requests=[];let reads=0;
+ const nodes=children.map(c=>({...c,sourceIds:[]}));
+ const scoped={...job,mapContext:{target:{id:'node',index:1},nodes:[{id:'node',resources:[{id:'repo'}]}],overview:{outline:[]}}};
+ const script=[first,[{name:'read_reference',args:{id:'repo',path:'missing.md'}}],[{name:'read_reference',args:{id:'repo',path:'missing.md'}}],[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+ globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+ try{
+  const result=await runPiAgent({connection,job:scoped,skill,hub,referenceReader:async()=>{reads++;throw Error('参考资源不可用');}});
+  assert.equal(reads,1);assert.equal(result.agent.sources.length,0);assert.equal(result.agent.recoveredFailures,0);
+  assert.ok(!requests[3].tools.some(t=>t.function.name==='read_reference'));
+ }finally{globalThis.fetch=saved;}
+});
+test('an interrupted partial model turn resumes the same Pi task without repeating completed tools',async()=>{
+ const saved=globalThis.fetch,events=[],requests=[];let checks=0,calls=0;
+ const nodes=children.map(c=>({...c,sourceIds:[]}));
+ const script=[first,[{name:'local_check',args:{}}],null,[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+ globalThis.fetch=async(url,options)=>{
+  calls++;requests.push(JSON.parse(options.body));const turn=script.shift();if(turn)return sseMessage(turn);
+  return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('data: '+JSON.stringify({choices:[{index:0,delta:{tool_calls:[{index:0,id:'incomplete-call',type:'function',function:{name:'local_check',arguments:'{'}}]}}]})+'\n\n'));setTimeout(()=>controller.error(Error('模型流连续 180 秒没有新数据 [AGENT_MODEL_IDLE_TIMEOUT]')),1);}}),{headers:{'Content-Type':'text/event-stream'}});
+ };
+ try{
+  const result=await runPiAgent({connection,job,skill,hub,retryDelayMs:0,emit:e=>events.push(e),executionTools:[{name:'local_check',label:'本地检查',description:'执行一次本地检查',parameters:{type:'object',properties:{}},execute:async()=>{checks++;return {content:[{type:'text',text:'local check completed'}]};}}]});
+  assert.equal(checks,1);assert.equal(calls,5);assert.equal(result.agent.modelRetries,1);assert.ok(events.some(e=>e.type==='model_retry'));
+  assert.ok(JSON.stringify(requests[3].messages).includes('local check completed'));assert.ok(!JSON.stringify(requests[3].messages).includes('incomplete-call'));
+ }finally{globalThis.fetch=saved;}
+});
+test('transient retry is bounded and authentication failures are never automatically retried',async()=>{
+ const saved=globalThis.fetch;
+ try{
+  let calls=0;globalThis.fetch=async()=>{calls++;throw Error('Idle timeout [AGENT_MODEL_IDLE_TIMEOUT]');};
+  await assert.rejects(runPiAgent({connection,job,skill,hub,retryDelayMs:0}));assert.equal(calls,3);
+  calls=0;globalThis.fetch=async()=>{calls++;throw Error('Authentication [AGENT_MODEL_AUTH]');};
+  await assert.rejects(runPiAgent({connection,job,skill,hub,retryDelayMs:0}));assert.equal(calls,1);
+  calls=0;const controller=new AbortController();globalThis.fetch=async()=>{calls++;throw Error('Idle timeout [AGENT_MODEL_IDLE_TIMEOUT]');};
+  await assert.rejects(runPiAgent({connection,job,skill,hub,signal:controller.signal,retryDelayMs:10,emit:e=>{if(e.type==='model_retry')controller.abort();}}),e=>e.code==='CANCELLED');assert.equal(calls,1);
+ }finally{globalThis.fetch=saved;}
+});
+
+test('large repository inputs stop at a cumulative text budget and switch to validation',async()=>{
+ const saved=globalThis.fetch,requests=[];let reads=0;
+ const scoped={...job,mapContext:{target:{id:'node',index:1},nodes:[{id:'node',resources:[{id:'repo'}]}],overview:{outline:[]}}};
+ const script=[first,Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:'repo',path:'large-'+i+'.txt'}})),[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+ globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+ try{
+  const result=await runPiAgent({connection,job:scoped,skill,hub,referenceReader:async()=>{reads++;return {title:'仓库文件',url:'https://github.com/team/game',text:'x'.repeat(16000)};}});
+  assert.ok(reads<10);assert.ok(result.agent.referenceChars<=64000);assert.ok(!requests[2].tools.some(t=>t.function.name==='read_reference'));
+ }finally{globalThis.fetch=saved;}
+});

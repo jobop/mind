@@ -1,3 +1,4 @@
+import {REFERENCE_LIMITS,referenceRequest,referenceKey} from './reference-policy.mjs';
 import { platformE2BKey } from './platform-config.mjs';
 import { Sandbox } from 'e2b';
 import { readFile } from 'node:fs/promises';
@@ -7,19 +8,20 @@ import { readPublicPage, PublicPageError } from './public-page.mjs';
 import { AgentRunError } from './pi-agent.mjs';
 export { brokerModel };
 let active = 0;
-const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context']);
+const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context','reference_read','reference_cache','resource_status','model_retry']);
 export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage, referenceReader }) {
   apiKey = platformE2BKey(apiKey);
   if (!apiKey) throw new AgentRunError('平台尚未配置 E2B 沙箱，请联系维护者配置 E2B_API_KEY', 'AGENT_SANDBOX_NOT_CONFIGURED');
   if (active >= 3) throw new AgentRunError('平台沙箱繁忙，请稍后重试', 'AGENT_SANDBOX_BUSY');
   if (!Array.isArray(skills) || !skills.length) throw new AgentRunError('项目尚未准备 Skill 文件', 'AGENT_NO_SKILLS');
   signal?.throwIfAborted(); active++;
-  let sandbox, handle, closed = false, result, failure, buffer = '', chain = Promise.resolve(), modelCalls = 0, pages = 0, referenceReads = 0, eventCount = 0;
+  let sandbox, handle, closed = false, result, failure, buffer = '', chain = Promise.resolve(), modelCalls = 0, pages = 0, referenceReads = 0, referenceCalls = 0, eventCount = 0;
   const controller = new AbortController(), cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
   const timeout = setTimeout(cancel, 1080000);
   const abort = () => { if (sandbox) sandbox.kill({ requestTimeoutMs: 10000, signal: AbortSignal.timeout(10000) }).catch(() => {}); };
   controller.signal.addEventListener('abort', abort, { once: true });
+  const referenceCache=new Map();
   const modelControllers = new Map(); let lastModelFailure = null;
   const send = message => handle.sendStdin(JSON.stringify(message) + '\n', { requestTimeoutMs: 60000, signal: controller.signal });
   async function processLine(line) {
@@ -47,10 +49,15 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
           if (++pages > 5) throw Error('网页请求次数超过限制');
           response = await pageReader(message.payload?.url, controller.signal);
         } else if (message.operation === 'reference') {
-          if (++referenceReads > 8) throw Error('参考资源读取次数超过限制');
-          const id=message.payload?.id;
+          if(++referenceCalls>64)throw Error('参考资源请求次数超过限制');
+          const request=referenceRequest(message.payload||{}),id=request.id,key=referenceKey(request);
           if(!referenceReader || !job.mapContext?.nodes.some(n=>n.resources?.some(r=>r.id===id))) throw Error('资源未加入本次导图');
-          response=await referenceReader(id,{path:typeof message.payload.path==='string'?message.payload.path:'',directory:message.payload.directory===true,signal:controller.signal});
+          if(!referenceCache.has(key)){
+            if(referenceReads>=REFERENCE_LIMITS.reads)throw Error('不同资源路径已达到读取预算');
+            referenceReads++;
+            referenceCache.set(key,Promise.resolve().then(()=>referenceReader(id,{path:request.path,directory:request.directory,signal:controller.signal})));
+          }
+          response=await referenceCache.get(key);
         } else throw Error('未知沙箱请求');
         await send({ type: 'rpc_result', id: message.id, result: response });
       } catch (error) {

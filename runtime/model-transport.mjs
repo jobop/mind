@@ -3,13 +3,14 @@ import https from 'node:https';
 import { lookup } from 'node:dns/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { publicUrl, isPublicAddress } from './public-page.mjs';
-export const MODEL_TIMEOUTS=Object.freeze({ firstByteMs:120000,idleMs:90000,totalMs:300000 });
+export const MODEL_TIMEOUTS=Object.freeze({ firstByteMs:120000,idleMs:180000,totalMs:300000 });
 export class ModelTransportError extends Error {constructor(code,message){super(message);this.code=code;}}
 export function modelHttpError(status){
   if([401,403].includes(status))return new ModelTransportError('AGENT_MODEL_AUTH','模型服务鉴权失败（HTTP '+status+'），请检查 Key 与模型权限');
   if(status===402)return new ModelTransportError('AGENT_MODEL_QUOTA','模型账户额度不足（HTTP 402），请检查余额');
   if(status===404)return new ModelTransportError('AGENT_MODEL_NOT_FOUND','模型或接口不存在（HTTP 404），请检查接口地址和模型名');
   if(status===429)return new ModelTransportError('AGENT_MODEL_RATE_LIMIT','模型服务限流（HTTP 429），请稍后重试');
+  if(status>=500)return new ModelTransportError('AGENT_MODEL_SERVER','模型服务暂时不可用（HTTP '+status+'）');
   return new ModelTransportError('AGENT_MODEL_HTTP','模型服务返回 HTTP '+status+'，本次调用未完成');
 }
 // This is a streaming transport. Only a small redaction tail and a short batching buffer are held.
@@ -58,7 +59,7 @@ export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup
     };
     for await(const chunk of response){
       received=true;clearTimeout(firstTimer);clearTimeout(idleTimer);
-      idleTimer=setTimeout(()=>timed('AGENT_MODEL_IDLE_TIMEOUT','模型流式响应已开始，但连续 90 秒没有新数据'),timeouts.idleMs);
+      idleTimer=setTimeout(()=>timed('AGENT_MODEL_IDLE_TIMEOUT','模型流式响应已开始，但连续 180 秒没有新数据'),timeouts.idleMs);
       size+=chunk.length;if(size>limits.wireBytes)throw new ModelTransportError('AGENT_MODEL_RESPONSE_LIMIT','模型 SSE 累计传输量超过平台上限（默认 64 MiB，包含事件开销），并非模型 token 上限');
       if(!onStream&&size>limits.bufferedBytes)throw new ModelTransportError('AGENT_MODEL_BUFFER_LIMIT','非流式兼容调用超过缓冲上限，请使用流式转发');
       const text=decoder.write(chunk);checkEvents(text);redact(text);

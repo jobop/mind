@@ -20,7 +20,7 @@ export function createPiModel(connection) {
 export function safeModelError(error, key) {
   const message = String(error?.message || error || '');
   if (/AGENT_MODEL_FIRST_BYTE_TIMEOUT/.test(message)) return '等待模型首包超过 120 秒';
-  if (/AGENT_MODEL_IDLE_TIMEOUT/.test(message)) return '模型流连续 90 秒没有新数据';
+  if (/AGENT_MODEL_IDLE_TIMEOUT/.test(message)) return '模型流连续 180 秒没有新数据';
   if (/AGENT_MODEL_TOTAL_TIMEOUT/.test(message)) return '单次模型调用超过 5 分钟总时限';
   if (/AGENT_MODEL_STREAM_INTERRUPTED/.test(message)) return '模型流在完整结束前中断';
   if (/402/.test(message)) return '模型账户额度不足，请检查余额';
