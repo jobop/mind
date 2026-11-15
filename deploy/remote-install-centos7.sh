@@ -117,7 +117,7 @@ PYE2B
 fi
 python3 - "$envfile" "$node_runtime" "$release" <<'PYCHECK'
 import os,sys,subprocess
-env={'PATH':'/usr/bin:/bin'}
+env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin'}
 for line in open(sys.argv[1]):
  key,sep,value=line.strip().partition('=')
  if sep and key in ['E2B_API_KEY','E2B_TEMPLATE_ID']:env[key]=value
