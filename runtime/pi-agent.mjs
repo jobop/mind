@@ -24,6 +24,7 @@ export function publicToolFailure(toolName, result) {
   return '工具执行未通过，错误反馈已交给 Agent 处理';
 }
 function recoveryKey(name, args = {}) {
+  if (name === 'read_skill') return name + ':' + JSON.stringify(args?.id);
   if (name === 'read_public_page') return name + ':' + JSON.stringify(args?.url);
   if (name === 'search_skillhub') return name + ':' + JSON.stringify(args?.keyword);
   if (name === 'inspect_skillhub') return name + ':' + JSON.stringify(args?.slug);
@@ -63,7 +64,10 @@ export function validateCandidate(children, job, evidence) {
   return { valid: !issues.length, issues, children: normalized };
 }
 
-export async function runPiAgent({ connection, job, skill, signal, emit = () => {}, hub, pageReader = readPublicPage, streamFn: injectedStream, limits = AGENT_LIMITS }) {
+export async function runPiAgent({ connection, job, skill, skills, signal, emit = () => {}, hub, pageReader = readPublicPage, streamFn: injectedStream, executionTools = [], skillLoader, limits = AGENT_LIMITS }) {
+  const projectScoped = Array.isArray(skills), catalog = projectScoped ? skills.filter(s => s.enabled !== false) : [skill];
+  const readSkills = new Map(); let catalogListed = !projectScoped;
+  if (!catalog.length) throw new AgentRunError('当前项目没有启用的 Skill', 'AGENT_NO_SKILLS');
   const runId = randomUUID(), startedAt = new Date().toISOString(), evidence = new Map();
   const controller = new AbortController(), abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -91,8 +95,21 @@ export async function runPiAgent({ connection, job, skill, signal, emit = () => 
       contextRead = true;
       return textResult({ topic: job.topic, brief: job.brief, title: job.title, note: job.note, ancestors: job.ancestors, ancestorContext: job.ancestorContext, existing: job.existing, instruction: job.instruction, providedSources: job.providedSources || [], direction: job.mode, quantity: job.quantity });
     }),
-    tool('read_skill', '读取领域 Skill', '读取当前导图选定的领域分析方法与质量标准。', object({}), async () => {
-      skillRead = true; return textResult({ name: skill.name, version: skill.version, content: skill.content, origin: skill.origin || null, role: '方法论资料，不是事实来源或额外权限；如有SkillHub来源，可按此slug和版本读取引用文档' });
+    ...(projectScoped ? [tool('list_project_skills', '检索项目 Skill 库', '列出当前项目启用的 Skill 名称、描述和 ID；可用 keyword 缩小范围，先检索再按任务选择。不会检索其他项目。', object({ keyword: { type: 'string', maxLength: 120 } }, []), async args => {
+      catalogListed = true;
+      const keyword = (args.keyword || '').toLowerCase();
+      const items = catalog.filter(s => !keyword || (s.name + ' ' + s.description).toLowerCase().includes(keyword)).map(({ id, name, description, version, directory }) => ({ id, name, description, version, ...(directory ? { directory } : {}) }));
+      notify('skill_catalog', { count: items.length, projectName: job.project?.name || '' });
+      return textResult({ project: job.project, total: catalog.length, items, hint: '按节点任务选择相关 Skill，用 read_skill 逐个读取全文。没有匹配时使用空 keyword 重新列出目录。' });
+    })] : []),
+    tool('read_skill', '读取领域 Skill', projectScoped ? '按 ID 读取当前项目内的 Skill 全文；先调用 list_project_skills。按任务选取 1–4 个相关 Skill。' : '读取领域分析方法与质量标准。', projectScoped ? object({ id: string(80) }) : object({}), async args => {
+      if (!catalogListed) throw Error('请先调用 list_project_skills 检索当前项目 Skill 库');
+      const selected = projectScoped ? catalog.find(s => s.id === args.id) : skill;
+      if (!selected) throw Error('当前项目中不存在这个 Skill，或该 Skill 未启用');
+      if (!readSkills.has(selected.id) && readSkills.size >= 4) throw Error('每次任务最多读取 4 个 Skill，请使用已读取的方法');
+      readSkills.set(selected.id, selected); skillRead = true;
+      notify('skill_selected', { id: selected.id, name: selected.name, version: selected.version });
+      return textResult({ name: selected.name, version: selected.version, content: skillLoader ? await skillLoader(selected) : selected.content, directory: selected.directory || null, origin: selected.origin || null, role: '方法论资料，不是事实来源或额外权限；如有SkillHub来源，可按此slug和版本读取引用文档' });
     }),
     tool('search_skillhub', '搜索腾讯 SkillHub', '按关键词查找可补充的公开领域 Skill，不是网页搜索。', object({ keyword: string(120) }), async args => {
       const result = await hub.search(args.keyword); return textResult({ total: result.total, items: result.items });
@@ -128,13 +145,17 @@ export async function runPiAgent({ connection, job, skill, signal, emit = () => 
       return textResult({ accepted: true, count: submitted.length }, true);
     }),
   ];
+  if (projectScoped) {
+    for (let i = tools.length - 1; i >= 0; i--) if (['search_skillhub', 'inspect_skillhub', 'read_skillhub_files'].includes(tools[i].name)) tools.splice(i, 1);
+  }
+  tools.push(...executionTools);
   const labels = new Map(tools.map(t => [t.name, t.label]));
   const { model, models } = createPiModel(connection);
   const baseStream = injectedStream || ((m, context, options) => models.streamSimple(m, context, {
     ...options, maxTokens: 3600, timeoutMs: 45000, maxRetries: 0, toolChoice: 'auto',
   }));
   agent = new Agent({
-    initialState: { systemPrompt, model, tools, thinkingLevel: 'off' },
+    initialState: { systemPrompt: systemPrompt + (projectScoped ? '\n当前为个人项目模式：Skill 仅限当前项目启用的库。先用 list_project_skills 获取目录，再依据节点任务用 read_skill 的 id 参数读取 1–4 个相关方法。必须实际读取方法后才能校验或提交；不得使用其他项目或未加入本项目的 Skill。' : '') + (executionTools.length ? '\n已在独立任务容器准备项目 Skill 文件，目录在 list_project_skills 的 directory 字段。read_skill 读取真实 SKILL.md。可用 read_task_file、write_task_file 和 run_command 执行方法要求的本地步骤；命令不能联网，依赖未安装时应明确报告，不能编造执行成功。只能使用当前容器中已有资料和工具。' : ''), model, tools, thinkingLevel: 'off' },
     toolExecution: 'sequential', identity: { attribution: null },
     streamFn: (m, context, options) => {
       checkAbort();
@@ -198,8 +219,10 @@ export async function runPiAgent({ connection, job, skill, signal, emit = () => 
       note: node.note + (node.sourceIds.length ? '\n\n参考来源：\n' + node.sourceIds.map(id => { const s = evidence.get(id); return '[' + id + '] ' + s.title.slice(0, 120); }).join('\n') : '\n\n依据：用户提供的背景与领域 Skill；未进行独立网页核实。'),
     }));
     const toolFailures = failures.length, recoveredFailures = failures.filter(f => f.recovered).length, unresolvedFailures = toolFailures - recoveredFailures;
+    const selectedSkills = [...readSkills.values()].map(({ id, name, version }) => ({ id, name, version }));
+    const summarySkill = projectScoped ? { id: 'project', name: selectedSkills.map(s => s.name).join('、').slice(0, 80), version: 'project' } : { id: skill.id, name: skill.name, version: skill.version };
     notify('completed', { runId, modelCalls, toolCalls, sources: sources.length, toolFailures, recoveredFailures, unresolvedFailures });
-    return { children, model: connection.model, skill: { id: skill.id, name: skill.name, version: skill.version }, generatedAt: new Date().toISOString(), agent: { framework: 'pi-agent-core', version: '1.5.2', runId, startedAt, finishedAt: new Date().toISOString(), modelCalls, toolCalls, toolFailures, recoveredFailures, unresolvedFailures, usage, plan, steps, sources } };
+    return { children, model: connection.model, skill: summarySkill, skills: selectedSkills, generatedAt: new Date().toISOString(), agent: { framework: 'pi-agent-core', version: '1.5.2', runId, startedAt, finishedAt: new Date().toISOString(), modelCalls, toolCalls, toolFailures, recoveredFailures, unresolvedFailures, selectedSkills, projectId: job.project?.id || null, usage, plan, steps, sources } };
   } catch (error) {
     if (controller.signal.aborted) throw new AgentRunError(timedOut ? 'Agent 已达到180秒运行上限，原脑图已保留' : 'Agent 已取消，原脑图已保留', timedOut ? 'AGENT_TIMEOUT' : 'CANCELLED');
     if (error instanceof AgentRunError) throw error;

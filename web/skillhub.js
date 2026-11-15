@@ -29,13 +29,14 @@ async function hubRequest(path, payload, status) {
 }
 function openSkillHub() {
   if (busy) return toast('请先等待或取消当前生成');
-  if (!$('skillDialog').open) openSkillSettings();
+  if (projectSession.project) { if (!$('skillDialog').open) editProjectSkill(); }
+  else if (!$('skillDialog').open) openSkillSettings();
   $('skillHubDialog').showModal();
   if (!$('hubResults').children.length) searchHub(1);
 }
 async function searchHub(page = 1) {
   const query = $('hubQuery').value.trim();
-  $('hubDetail').hidden = true; hubSelection = null; hubDocuments = null; $('hubUseBtn').disabled = true;
+  $('hubResults').hidden = false; $('hubPagination').hidden = false; $('hubDetail').hidden = true; hubSelection = null; hubDocuments = null; $('hubUseBtn').disabled = true;
   const result = await hubRequest('/api/skillhub/search?' + new URLSearchParams({ q: query, page: String(page) }), undefined, '正在搜索腾讯 SkillHub…');
   if (!result) return;
   hubKeyword = query; hubPage = result.page; hubTotal = result.total;
@@ -55,6 +56,24 @@ async function searchHub(page = 1) {
     preview.onclick = () => loadHubDetail(skill.slug);
     const source = document.createElement('a'); source.textContent = '原页面 ↗';
     source.href = 'https://skillhub.cn/skills/' + encodeURIComponent(skill.slug); source.target = '_blank'; source.rel = 'noopener noreferrer';
+    if (projectSession.project) {
+      const add = document.createElement('button'); add.className = 'btn'; add.textContent = '＋ 加入当前项目';
+      add.onclick = async () => {
+        const projectId = projectSession.project?.id; add.disabled = true; add.textContent = '正在读取…';
+        const detail = await hubRequest('/api/skillhub/detail?' + new URLSearchParams({ slug: skill.slug }), undefined, '正在读取 ' + skill.name + '…');
+        if (!detail) { add.disabled = false; add.textContent = '重试添加'; return; }
+        const primary = detail.files.find(f => /(^|\/)SKILL\.MD$/i.test(f.path)) || detail.files.find(f => /\.(md|markdown|txt)$/i.test(f.path));
+        if (!primary) { add.disabled = false; add.textContent = '没有可导入文档'; return; }
+        const result = await hubRequest('/api/skillhub/read', { slug: detail.slug, version: detail.version, paths: [primary.path] }, '正在校验并加入项目…');
+        if (!result || projectSession.project?.id !== projectId) { add.disabled = false; add.textContent = '重试添加'; return; }
+        try {
+          const parsed = parseSkillMarkdown(result.documents[0].content, skill.name + '.md');
+          addProjectSkill({ ...parsed, name: skill.name.slice(0, 80), description: skill.description.slice(0, 500), version: result.version, origin: { provider: 'skillhub', slug: result.slug, version: result.version, files: result.documents.map(d => ({ path: d.path, sha256: d.sha256 })) } });
+          await flushProjectSave(); add.textContent = '✓ 已加入项目'; $('hubStatus').textContent = '已加入「' + projectSession.project.name + '」，可继续添加其他 Skill。';
+        } catch (error) { add.disabled = false; add.textContent = '重试添加'; $('hubError').textContent = error.message; $('hubError').hidden = false; }
+      };
+      actions.append(add);
+    }
     actions.append(preview, source); card.append(title, description, meta, actions); $('hubResults').append(card);
   }
   $('hubPage').textContent = '第 ' + hubPage + ' 页 · 共 ' + hubTotal + ' 项';
@@ -63,8 +82,10 @@ async function searchHub(page = 1) {
 async function loadHubDetail(slug) {
   hubSelection = null; hubDocuments = null; $('hubUseBtn').disabled = true;
   $('hubPreview').value = ''; $('hubDetail').hidden = true;
+  $('hubResults').hidden = true; $('hubPagination').hidden = true;
+  $('skillHubDialog').scrollTop = 0;
   const result = await hubRequest('/api/skillhub/detail?' + new URLSearchParams({ slug }), undefined, '正在读取版本与文件列表…');
-  if (!result) return;
+  if (!result) { $('hubResults').hidden = false; $('hubPagination').hidden = false; return; }
   hubSelection = result;
   $('hubTitle').textContent = result.name + ' @ ' + result.version;
   $('hubDescription').textContent = result.description;
@@ -107,7 +128,7 @@ function useHubSkill() {
   $('skillPreset').value = 'custom'; $('skillName').value = hubSelection.name.slice(0, 80); $('skillContent').value = content;
   skillDraftOrigin = normalizeSkillOrigin({ provider: 'skillhub', slug: hubDocuments.slug, version: hubDocuments.version, files: hubDocuments.documents.map(doc => ({ path: doc.path, sha256: doc.sha256 })) });
   updateSkillCount(); renderSkillOrigin(); $('skillHubDialog').close();
-  toast(content.length > 12000 ? '已载入原文，请精简到 12000 字符以内后应用' : '已载入，请检查后点击「应用到当前导图」');
+  toast(content.length > 12000 ? '已载入原文，请精简到 12000 字符以内后应用' : '已载入，请检查后点击「保存到项目 Skill 库」');
 }
 $('openSkillHub').onclick = openSkillHub;
 $('hubSearchForm').onsubmit = e => { e.preventDefault(); searchHub(1); };
@@ -116,3 +137,5 @@ $('hubNext').onclick = () => { $('hubQuery').value = hubKeyword; searchHub(hubPa
 $('hubReadBtn').onclick = readHubDocuments;
 $('hubUseBtn').onclick = useHubSkill;
 $('skillHubDialog').addEventListener('close', () => { hubRequestId++; hubController?.abort(); hubController = null; hubSetBusy(false); });
+
+$('hubBack').onclick = () => { hubRequestId++; hubController?.abort(); hubSetBusy(false); $('hubDetail').hidden = true; $('hubResults').hidden = false; $('hubPagination').hidden = false; $('hubStatus').textContent = ''; };

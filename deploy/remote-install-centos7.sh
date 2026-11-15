@@ -104,6 +104,17 @@ old=p.read_text(encoding='utf-8').splitlines() if p.exists() else []
 lines=[line for line in old if line.split('=',1)[0] not in values]+[k+'='+v for k,v in values.items()]
 temp=p.with_suffix('.new');temp.write_text('\n'.join(lines)+'\n',encoding='utf-8');os.chmod(str(temp),0o600);os.replace(str(temp),str(p))
 PY
+if [[ -f $incoming/e2b-settings.json ]]; then
+  python3 - "$incoming/e2b-settings.json" "$envfile" <<'PYE2B'
+import json,pathlib,sys,os,re
+values=json.load(open(sys.argv[1]));p=pathlib.Path(sys.argv[2])
+allowed={key:str(values[key]) for key in ['E2B_API_KEY','E2B_TEMPLATE_ID'] if key in values}
+if any(len(v)>1000 or re.search(r'[^a-zA-Z0-9_./:@+-]',v) for v in allowed.values()):raise SystemExit('Invalid E2B environment values')
+lines=[line for line in p.read_text().splitlines() if line.split('=',1)[0] not in allowed]
+temp=p.with_suffix('.e2b-new');temp.write_text('\n'.join(lines+[key+'='+value for key,value in allowed.items()])+'\n');os.chmod(str(temp),0o600);os.replace(str(temp),str(p))
+PYE2B
+  rm -f "$incoming/e2b-settings.json"
+fi
 cat > "$unit" <<UNIT
 # managed-by: jobop/mind
 [Unit]

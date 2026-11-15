@@ -40,6 +40,7 @@ function validWorkspace(w) {
     w.maps.every(m => m && typeof m.id === 'string' && typeof m.title === 'string' && m.title.trim() && m.title.length <= 80 && validTree(m.root) && validMapSettings(m)) &&
     new Set(w.maps.map(m => m.id)).size === w.maps.length;
 }
+let projectSession = { ready: false, user: null, project: null, projects: [], dirty: false, saving: false };
 let workspace, storageOK = true;
 try {
   const stored = localStorage.getItem(KEY);
@@ -81,6 +82,7 @@ function toast(message) {
 }
 function save() {
   map().updated = Date.now();
+  if (projectSession.project) { scheduleProjectSave(); return true; }
   if (!storageOK) { $('saveStatus').textContent = '未保存，请导出备份'; return false; }
   try {
     localStorage.setItem(KEY, JSON.stringify(workspace));
@@ -370,6 +372,15 @@ function showAgentEvent(event) {
     tool_start: () => '开始：' + event.label,
     tool_end: () => (event.ok ? '完成：' : '工具未成功：') + event.label + (!event.ok && event.reason ? '；原因：' + event.reason : ''),
     tool_recovered: () => '已修复：' + event.label + '，后续重试成功',
+    sandbox_preparing: () => '任务开始前准备 ' + event.count + ' 个项目 Skill',
+    skill_prepared: () => '已准备 Skill：' + event.name + '（' + event.files + ' 个文件）',
+    sandbox_creating: () => '正在创建本次任务的独立 E2B 沙箱',
+    sandbox_created: () => '独立 E2B 沙箱已创建',
+    sandbox_ready: () => 'Skill 文件已就绪，Pi Agent 在沙箱内开始执行',
+    sandbox_destroyed: () => '本次任务沙箱已销毁',
+    sandbox_cleanup_pending: () => '沙箱清理请求未确认，将由最长 5 分钟生命周期回收',
+    skill_catalog: () => '已检索项目 Skill 库 · ' + event.count + ' 个可选方法',
+    skill_selected: () => '本次采用 Skill：' + event.name + ' @ ' + event.version,
     source: () => '已读取证据 [' + event.id + '] ' + event.title,
     validation: () => event.valid ? '分支结构与引用校验通过' : '需要修订：' + event.issues.join('；'),
     completed: () => 'Agent 已提交经过校验的分支',
@@ -434,12 +445,15 @@ function requestSnapshot() {
   const n = find(selected).node;
   return {
     mapId: map().id, nodeId: n.id,
-    payload: { topic: map().root.title, brief: map().brief || '', skill: clone(map().skill || { id: 'general' }), title: n.title, note: n.note || '', ancestors: ancestors(n.id), ancestorNotes: ancestorNotes(n.id),
+    payload: { projectId: projectSession.project?.id, topic: map().root.title, brief: map().brief || '', skill: clone(map().skill || { id: 'general' }), title: n.title, note: n.note || '', ancestors: ancestors(n.id), ancestorNotes: ancestorNotes(n.id),
       providedSources: (n.generated?.sources || []).slice(0, 5).map(s => ({ url: s.url, title: s.title })), existing: n.children.map(c => c.title), mode, quantity: Number($('branchCount').value), instruction: $('instruction').value.trim() },
   };
 }
 async function generate(snapshot) {
   if (busy || connecting) return;
+  if (projectSession.ready && !projectSession.user) { openAccount(); return toast('请先登录，并选择属于你的项目'); }
+  if (projectSession.ready && !projectSession.project) return toast('请先创建或选择项目');
+  if (projectSession.project) { try { await flushProjectSave(); } catch (error) { return toast('保存项目后才能生成：' + error.message); } }
   if (!connection.configured) { toast('先连接你的模型，就可以开始生成'); openSettings(); return; }
   const job = snapshot || requestSnapshot();
   const targetMap = workspace.maps.find(m => m.id === job.mapId);
@@ -464,11 +478,11 @@ async function generate(snapshot) {
     const seen = new Set(target.children.map(c => c.title.trim().toLowerCase()));
     for (const c of result.children) { const key = c.title.trim().toLowerCase(); if (seen.has(key)) throw Error('模型返回了重复分支，请重试'); seen.add(key); }
     checkpoint();
-    target.children.push(...result.children.map(c => ({ id: uid(), title: c.title.trim(), note: c.note, children: [], generated: { model: result.model, at: result.generatedAt, direction: job.payload.mode, skill: result.skill || null, agent: result.agent ? { framework: result.agent.framework, version: result.agent.version, runId: result.agent.runId, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls } : null, sources: result.agent?.sources || [] } })));
+    target.children.push(...result.children.map(c => ({ id: uid(), title: c.title.trim(), note: c.note, children: [], generated: { skills: result.skills || [], model: result.model, at: result.generatedAt, direction: job.payload.mode, skill: result.skill || null, agent: result.agent ? { framework: result.agent.framework, version: result.agent.version, runId: result.agent.runId, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls } : null, sources: result.agent?.sources || [] } })));
     target.collapsed = false; selected = target.id;
     if (result.agent) {
       agentTraceRunId = result.agent.runId;
-      targetMap.agentRuns = [{ runId: result.agent.runId, model: result.model, at: result.generatedAt, plan: result.agent.plan, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls, toolFailures: result.agent.toolFailures, recoveredFailures: result.agent.recoveredFailures, unresolvedFailures: result.agent.unresolvedFailures, usage: result.agent.usage, steps: agentEvents.slice(-80), sources: result.agent.sources }, ...(targetMap.agentRuns || [])].slice(0, 10);
+      targetMap.agentRuns = [{ runId: result.agent.runId, model: result.model, at: result.generatedAt, plan: result.agent.plan, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls, toolFailures: result.agent.toolFailures, recoveredFailures: result.agent.recoveredFailures, unresolvedFailures: result.agent.unresolvedFailures, selectedSkills: result.agent.selectedSkills || [], usage: result.agent.usage, steps: agentEvents.slice(-80), sources: result.agent.sources }, ...(targetMap.agentRuns || [])].slice(0, 10);
       $('agentRunStatus').textContent = agentSummary(result.agent);
       renderAgentSources(result.agent.sources || []);
     }
@@ -562,7 +576,7 @@ function download(data, filename, type) {
   link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 $('exportBtn').onclick = () => {
-  download(JSON.stringify({ format: 'branch-ai', version: 1, map: map() }, null, 2), map().title.replace(/[\\/:*?"<>|]/g, '_') + '.json', 'application/json');
+  download(JSON.stringify({ format: 'branch-ai', version: 1, projectSkills: projectSession.project?.skills || [], projectBrief: projectSession.project?.brief || '', map: map() }, null, 2), map().title.replace(/[\\/:*?"<>|]/g, '_') + '.json', 'application/json');
   toast('已导出当前导图，备份中不包含模型密钥');
 };
 $('importBtn').onclick = () => $('importFile').click();
@@ -587,6 +601,7 @@ $('importFile').onchange = async e => {
       return node;
     }
     const imported = { id: uid(), title: item.title.trim(), updated: Date.now(), root: sanitize(item.root), brief: item.brief || '', skill: item.skill?.id === 'custom' ? { id: 'custom', name: item.skill.name, content: item.skill.content, origin: normalizeSkillOrigin(item.skill.origin) } : { id: item.skill?.id || 'general' } };
+    if (projectSession.project && typeof importProjectSkills === 'function') importProjectSkills(data.projectSkills, item.skill);
     checkpoint(); workspace.maps.unshift(imported); workspace.active = imported.id; selected = imported.root.id; failedRequest = null;
     commit(); fit(); toast('导图已导入');
   } catch (error) { toast(error instanceof SyntaxError ? 'JSON 文件无法读取，请检查文件内容' : error.message); }
@@ -620,12 +635,20 @@ function skillOptions(select, selectedId, customLabel = '自定义 / 导入 Skil
   select.value = selectedId;
 }
 function renderSkillPicker() {
+  if (projectSession.project) {
+    $('skillSelect').hidden = true;
+    const enabled = projectSession.project.skills.filter(s => s.enabled !== false);
+    $('skillSummary').textContent = '项目内已启用 ' + enabled.length + ' 个 Skill，Agent 会按当前任务选择并读取。';
+    $('skillContext').textContent = '管理项目 Skill 库 / 项目背景 ↗';
+    return;
+  }
   const skill = effectiveSkill();
   skillOptions($('skillSelect'), skill.id, map().skill?.id === 'custom' ? map().skill.name : '＋ 自定义 / 导入 Skill');
   $('skillSummary').textContent = skill.description || '使用当前导图保存的自定义方法论。';
   $('skillContext').textContent = map().brief ? '已补充项目背景 · 查看 / 编辑 ↗' : '补充项目背景 / 导入 Skill ↗';
 }
 function openSkillSettings() {
+  if (projectSession.project) return openProjectSkills();
   if (busy) return toast('请先等待或取消当前生成');
   closeContextMenu();
   const skill = effectiveSkill();
@@ -656,6 +679,7 @@ function markCustomSkill() { $('skillPreset').value = 'custom'; if (skillDraftOr
 $('skillName').oninput = markCustomSkill; $('skillContent').oninput = markCustomSkill;
 $('skillForm').onsubmit = e => {
   e.preventDefault(); if (busy) return;
+  if (projectSession.project) return saveProjectSkill();
   const name = $('skillName').value.trim(), content = $('skillContent').value.trim(), brief = $('projectBrief').value.trim();
   if (!name || name.length > 80 || !content || content.length > 12000 || brief.length > 4000) return toast('请检查 Skill 名称、内容及项目背景的长度');
   const builtin = DOMAIN_SKILLS.find(s => s.name === name && s.content === content);

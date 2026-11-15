@@ -1,112 +1,80 @@
-# 枝想 2.1 · Pi Agent 思维导图
+# 枝想 3.0 · 个人项目与 E2B Pi Agent
 
-GitHub 仓库：[jobop/mind](https://github.com/jobop/mind)。阿里云部署工作流与服务器初始化说明见 [deploy/README.md](deploy/README.md)。推送 main 自动运行 CI；手动执行 Actions 工作流才部署到 `https://mind.made-world.link`。
+个人账号 → 多个项目 → 各项目独立的导图和 Skill 库 → 每次任务独立 E2B 沙箱。
 
-H5 思维导图 + 本地 Node.js 服务 + Pi 官方 Agent SDK。点击节点后，由 Pi 管理多轮模型请求、工具执行、观察结果和提交；生成入口不再采用一次 Chat Completions 请求直接写入节点的方式。
+- 仓库：https://github.com/jobop/mind
+- 网站：https://mind.made-world.link
+- 当前源码：https://mind.made-world.link/downloads/mind-source.zip
+- 部署说明：[deploy/README.md](deploy/README.md)
 
-## 启动
+## 使用
 
-需要 Node.js **22.19 或更新的 LTS 版本**。
+1. 注册 / 登录个人账号，创建一个或多个项目。用户名与密码登录；当前不提供自助密码找回。
+2. 在「项目 Skill 库」添加多个内置方法、Markdown 或腾讯 SkillHub Skill，并勾选启用。项目背景也在这里设置。
+3. 在页面配置自己的模型 Base URL、模型 ID 和 API Key，接口需要支持 OpenAI 兼容 Chat Completions、Function Calling 和 SSE。
+4. 点击节点生成子问题或解决方案。Agent 检索当前项目的 Skill 目录，选择并读取 1–4 个相关方法，按需执行工具，再校验并提交分支。
+5. 执行记录显示准备了哪些文件、采用哪些 Skill、工具状态和沙箱清理状态。右键节点 / 手机长按打开操作菜单。
 
-- Windows：解压后双击「启动-Windows.bat」。
-- macOS：双击「启动-Mac.command」，或在本目录运行 `npm start`。
-- Linux：在本目录运行 `npm start`。
-- 浏览器打开 `http://localhost:3000`，保持启动窗口开启。
+E2B 由平台统一提供，用户不需要输入 E2B Key。项目与 Skill 的访问权限在服务器校验；提交其他项目 ID、伪造 Skill 内容或借用其他账号的模型 Cookie 均不能获得对应权限。
 
-完整运行包包含 JavaScript 依赖，可直接启动。源码包首次启动会按 package-lock.json 自动安装依赖；也可以先运行 `npm ci --ignore-scripts`。修改源码后执行 `npm run build`，再重启。
+## 任务沙箱
 
-## 模型要求
+1. 从服务器取得当前账号当前项目启用的 Skill 快照。
+2. 对 SkillHub 来源按固定版本读取文件，逐文件 SHA-256 校验，缓存在该项目独立的目录。项目审核 / 编辑过的 SKILL.md 优先；脚本和引用文件保持固定版本。
+3. 使用平台 E2B Key 创建一个全新沙箱，最长生命周期 5 分钟，不复用其他任务的 VM 或快照。
+4. 通过 E2B 文件 API 上传无凭证的 Node/Pi 运行包，准备独立的 `skills/<id>/SKILL.md`、脚本与引用文件。所有文件准备好后，才启动 Pi Agent 工具循环。
+5. Agent 在沙箱内运行；`read_skill` 从真实文件读取方法。`read_task_file`、`write_task_file` 和 `run_command` 可用于执行 Skill 的本地步骤。
+6. 正常结束、报错、取消或超时均在 finally 中请求销毁沙箱；销毁未确认会显示待清理，平台固定生命周期兜底回收。
 
-在网页「模型设置」中配置 Base URL、模型 ID、API Key。必须支持 OpenAI 兼容的 **Chat Completions、Function Calling 和 SSE 流式响应**。连接检测通过 Pi 实际要求模型返回 connection_check 工具调用；只回复“连接成功”文本不会被视为工具能力验证通过。
+沙箱不挂载宿主机文件、数据库或 Docker Socket，E2B Key 和真实模型 Key 都不会传入沙箱。沙箱默认禁止直接出网；模型调用和公开网页读取经过平台受限代理。代理固定模型目的地址、限制调用预算、拒绝私网 DNS，并固定验证后的连接地址。模型凭证仅在平台发往用户配置的模型服务时使用。
 
-从旧版升级后建议重新连接验证工具能力。Agent 每次任务可能进行多次收费模型请求；当前上限是 **8 次模型请求、20 次工具执行、5 个网页、180 秒**。这些是执行次数与时间上限，不是金额保证；没有已知单价时不显示虚构费用。
+命令可使用默认 E2B 模板提供的 Python3 和上传的 Node；单条命令最长 15 秒、输出最多 32KB。网络安装依赖不开放；需额外依赖时由维护者提供预装的 E2B 模板，不能把未执行成功的步骤描述为完成。Skill 文件最多 40 个 / 4MB，每个任务的 Skill 总文件最多 16MB；超限会明确拒绝，不静默省略。
 
-## Pi 框架与执行流程
+Agent 预算为 8 次模型请求、20 次工具调用、5 个公开网页、180 秒循环时间。加上创建和上传过程，平台任务截止时间 270 秒。模型调用与 E2B 都可能产生费用，预算不是金额保证。
 
-锁定依赖：
+## 平台配置与启动
 
-- `@earendil-works/pi-agent-core` **1.5.2**：Agent 状态、工具循环、工具参数校验、事件订阅、取消。
-- `@earendil-works/pi-ai` **1.5.2**：兼容模型适配、流式工具调用解析、消息转换。
-- `ipaddr.js` **2.3.0**：公开网页读取的地址分类。
+需要 Linux Node.js 22.19+；E2B 上传包需包含 Linux Node。线上工作流在 Linux 构建。
 
-官方仓库：https://github.com/earendil-works/pi 。旧的 badlogic/pi-mono 文档入口已转向同一 Pi 项目；本项目采用安装时核实的当前 npm 包名与版本，并保留锁文件。
+```sh
+npm ci --ignore-scripts
+npm run build
+npm run sandbox:bundle
+E2B_API_KEY=平台凭证 npm start
+```
 
-正常执行过程：
+维护者在环境中设置 `E2B_API_KEY`；可选 `E2B_TEMPLATE_ID`，留空使用 E2B 默认 base 模板。不要将真实值写入源码或提交 `.env`。默认监听 `http://localhost:3000`。Windows/macOS 如需运行平台，应使用 Linux 环境或连接已部署网站；源码中的启动脚本可用于基本服务，但跨系统 Node 二进制不能直接上传 Linux 沙箱。
 
-1. `plan_work`：记录简短行动步骤，不记录内部思维链。
-2. `read_node_context`、`read_skill`：读取当前节点、项目背景、祖先备注、已有分支及领域方法。
-3. Agent 自主选择已接入工具，按需读取 SkillHub 参考或公开网页；工具结果进入 Pi 的后续模型请求。
-4. `validate_branches`：校验分支数量、重名、备注结构、引用是否来自本次实际读取。问题返回给模型修订。
-5. `submit_branches`：只接受与校验通过内容相同的结果，结束运行，前端一次性追加节点。
+阿里云部署：在 GitHub Actions Secrets 配置 `ALIYUN_SSH_PASSWORD` 和 `E2B_API_KEY`；可选仓库 Variable `E2B_TEMPLATE_ID`。推送 main 运行 CI，手动执行工作流部署。凭证单独通过 SSH 传到服务器的 `/etc/mind/mind.env`（0600），不进入应用 / 源码压缩包，也不出现在前端设置中。
 
-没有读取上下文/Skill、没有通过校验、只输出文字或伪造来源编号，都不会写入脑图。不存在失败时的演示分支或普通生成降级。原图可撤销/重做，取消和失败不写入候选节点。
+流水线在有 E2B Secret 时先做真实 E2B 冒烟测试，通过后部署；测试使用真实 VM、真实 Pi SDK 和脚本，但模型 SSE 响应受控，不消费付费模型额度。
 
-执行进度通过 NDJSON 实时传给网页，展示行动计划、模型轮次、工具开始/结束、校验与来源。SDK 的内部推理、API Key、原始服务商错误体不展示。成功任务最近 10 条记录保存在当前导图中；节点记录 Pi 框架、模型、Skill 和来源，可通过 JSON 备份。
+## 数据与迁移
 
-## 已接入的工具边界
+- SQLite：`DATA_DIR/projects.sqlite` 保存个人账号（scrypt 密码散列）、散列会话 Token 和按 owner_id 隔离的项目。项目包含多张导图、背景与多个 Skill。
+- 会话使用 HttpOnly / SameSite=Strict Cookie，HTTPS 使用 Secure 和 __Host- 前缀。模型 Key 用 AES-GCM 加密在当前浏览器 Cookie 中，并绑定账号，7 天过期。
+- 保存带 revision 校验，其他页面已修改时返回冲突，不覆盖新版本。未同步时页面显示重试入口，并在关闭时提示。
+- 旧版 localStorage 导图不会自动归给任意登录者。登录后点击「迁移旧版浏览器导图」迁入独立项目，收集原来的 Skill，本地原件保留。
+- 导图 JSON 导出包含项目 Skill 快照，不包含任何凭证。项目之间导入是用户显式操作。
+- 备份服务器 `DATA_DIR`（线上 `/var/lib/mind`），包括加密密钥、数据库及 SQLite WAL；在线备份应使用 SQLite backup API 或先停服务复制，不能只复制繁忙的单个 DB 文件。
 
-| 工具 | 能力 |
-| --- | --- |
-| plan_work | 记录行动纲要 |
-| read_node_context | 当前节点、项目背景、祖先、补充指令和已有分支 |
-| read_skill | 当前选择的内置或自定义方法论 |
-| search_skillhub | 搜索腾讯公开 Skill 库 |
-| inspect_skillhub | 查询 Skill 版本与文件列表 |
-| read_skillhub_files | 读取固定版本 Markdown/文本并校验哈希 |
-| read_public_page | 读取一个公网 HTTPS 的 HTML/Markdown/纯文本网页 |
-| validate_branches | 检查结构、重名和来源编号 |
-| submit_branches | 提交已通过检查的结果 |
+## Pi 与工具
 
-此版本没有通用搜索引擎、登录态浏览器、任意文件读取、Shell、代码执行或外部写入工具。可在项目背景、节点备注或补充说明中提供需要核实的来源 URL；模型也可自行选择已知公开页面。不能把 SkillHub 搜索描述成全网检索。
+锁定官方依赖 `@earendil-works/pi-agent-core` / `@earendil-works/pi-ai` 1.5.2、E2B SDK 2.64.0。官方 Pi：https://github.com/earendil-works/pi 。
 
-**给一个 Skill 不代表能执行它的所有要求。** 方法论与已接入工具支持的步骤可以执行；依赖数据库、浏览器、Python、Shell 或专用 API 的 Skill 需要再接相应执行器。不会把未执行的步骤描述为已完成。
+项目任务的工具包括：计划、读取节点上下文、检索项目 Skill 目录、从文件读取 Skill、读取 / 写入任务文件、执行沙箱命令、读取公开网页、校验候选分支、提交分支。SkillHub 搜索用于用户给项目选 Skill；任务不能自行从公共库加入未授权 Skill，也不能读取其他项目。
 
-结构校验不等于事实核验、语义去重或独立专家评审；读取网页也不保证该网页内容正确。没有独立来源的分支会注明依据为用户背景与 Skill；读取的来源会显示链接。专业质量仍取决于模型、材料与 Skill。
+没有读取方法、没有经过校验、只输出文字或伪造网页来源编号均不能提交节点。结构校验不代表事实核验或独立专家评审；重要结论仍需证据。失败原因经过脱敏；重试成功会标记后续已修复，旧版没存下来的具体错误不能补回。
 
-## Skill 与腾讯 SkillHub
+## 验证与源码包
 
-每张导图可选产品研究、软件架构、商业增长、项目执行或结构化分析方法论，或导入自定义 SKILL.md，并保存项目背景。正文最多 12000 字符，背景最多 4000 字符。
+```sh
+npm run build
+npm test
+# Linux 完整发布包的在线 E2B 验证（需平台 Key）
+E2B_API_KEY=平台凭证 npm run test:e2b
+```
 
-「Skill 设置 → 腾讯 SkillHub」支持搜索、预览主文档和参考文件、载入编辑器再应用。导入保留 slug、固定版本、路径与 SHA-256；改动正文会标记已修改。网页不执行 Skill 里的命令，不自动安装其依赖。
+自动化检查覆盖 Pi 工具循环、项目越权、会话撤销、模型凭证账号绑定、保存冲突、项目缓存隔离、Skill 文件校验、E2B 生命周期及错误清理。真实 E2B 冒烟测试由部署流水线执行；普通测试使用受控 SDK 边界与模型响应。没有使用付费真实 LLM 来验证专业领域结论。
 
-官方 API： https://github.com/Tencent/skillhub/tree/main/docs/api 。公共读取在此前已实测可用；未来权限、配额和可用性以腾讯为准。可选服务端环境变量 `SKILLHUB_API_KEY` 不会转发给网页或文件对象存储。Agent 也能按需使用这些接口读取更多方法资料。
-
-## 本地数据与密钥
-
-导图仍保存在当前浏览器 localStorage，兼容 1.x 导图的数据键和 JSON 格式。清除浏览器数据会删除本地图；设备间请导出/导入。
-
-模型 Key 经本地服务 AES-GCM 加密后保存在 HttpOnly Cookie，7 天过期；不写入导图、源码或日志。**升级时保留原 `.branch-data` 文件夹**，其中是本地加密密钥。不要分享运行后产生的该目录。更换模型接口地址必须重新输入 Key，避免向新目的地发送原有凭证。
-
-生成时仅发送当前任务相关的上下文给配置的模型。SkillHub 工具会发送搜索词和脱敏来源标识；网页工具发送指定 URL 的公开 GET 请求。模型 Key 不会提供给这些工具。
-
-公开网页读取限制为 HTTPS、有限大小文本，DNS 解析后拒绝内网/保留地址并固定实际连接地址，重定向逐次检查；不携带浏览器 Cookie 或模型凭证。需要 JavaScript 渲染、登录或 PDF 的页面会提示无法读取。
-
-本地 HTTP 服务只监听 127.0.0.1，校验 Host 和同源请求。仅本机 HTTP Cookie 使用单独名称；已有线上 HTTPS Cookie 策略保留。对外部署需要由部署方配置 HTTPS、身份与访问控制；GitHub 部署使用独立的生产域名和持久目录；原 Sites 托管不受影响。
-
-## 代码结构
-
-- `web/`：H5 导图、SkillHub 入口和 Agent 进度 UI。
-- `runtime/`：真正导入 Pi SDK 的 Agent、模型适配与公开网页工具。
-- `worker/`：HTTP 路由、加密连接、SkillHub 桥接；运行时由本地 Node 注入。
-- `scripts/`：启动、构建和检查脚本。
-- `dist/server/index.js`：已构建的网页和 HTTP 路由。单独运行这个路由文件没有 Pi 运行时，生成会明确拒绝；请用启动脚本或部署工作流。
-- `examples/SKILL.md`：自定义方法论示例。
-
-## 验证
-
-`npm test` 通过 自动化检查，包含实际 Pi SDK 的多轮工具执行、工具结果进入下一轮请求、校验失败修订、无工具回答拒绝、伪造来源拒绝、取消、预算上限、公开地址限制、HTTP 流式进度、Cookie 加密、本地完整传输，以及旧导图、右键与 SkillHub 回归。
-
-SDK 与模型协议测试使用受控 SSE 服务商响应；不是以手写循环替代 Pi。HTTP 集成测试使用真正的本地服务和真正的 Pi SDK。未使用付费真实模型账户验证最终生成质量；使用者在页面连接时会实际测试自己的模型。此前已实测腾讯 SkillHub 搜索、版本列表、主文档和参考文档读取与 SHA-256 校验。当前缺少浏览器 QA 入口，未完成真实浏览器交互验证。
-
-Pi 及其他依赖按各包原有许可证分发；完整运行包在 node_modules 和 THIRD_PARTY 中保留对应许可证与补充声明。
-
-## 公网源码下载
-
-每次正式部署会用 `git archive` 打包该次提交的已跟踪源码，发布到：
-
-- `https://mind.made-world.link/downloads/mind-source.zip`
-- SHA-256：`https://mind.made-world.link/downloads/mind-source.sha256`
-
-源码包含部署流水线与依赖锁文件，不包含 node_modules、构建产物、未跟踪文件、服务器密钥或用户数据。下载后按本文安装依赖并启动。帮助窗口也提供下载入口。
-
-工具失败时，执行记录会显示经过脱敏的原因；同一操作重试成功后，原记录会标记“后续已修复”。完成摘要分别报告已修复与未恢复次数，历史记录保留这些状态。旧版本没有保存错误原因的记录无法补回。
+每次发布以 git archive 打包已提交源码，提供 `/downloads/mind-source.zip` 与 `/downloads/mind-source.sha256`，不包含依赖目录、数据、环境凭证或运行包。依赖许可证保留在 node_modules / THIRD_PARTY；完整运行包同时保留 Node 许可证。

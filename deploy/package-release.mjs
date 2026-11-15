@@ -40,6 +40,8 @@ if (arch === process.arch) {
   await cp(join(output, `node-${process.version}-linux-${arch}/LICENSE`), join(stage, 'bin/NODE_LICENSE'));
 }
 await chmod(join(stage, 'bin/node'), 0o755);
+// A credential-free runtime is uploaded through E2B's file API; no npm install or internet inside the task VM.
+execFileSync('tar', ['-czf', join(stage, 'sandbox-runtime.tar.gz'), '-C', stage, 'bin', 'runtime', 'node_modules', 'package.json', 'package-lock.json']);
 const archive = join(output, 'mind-release.tar.gz');
 execFileSync('tar', ['-czf', archive, '-C', stage, '.']);
 const digest = createHash('sha256').update(await readFile(archive)).digest('hex');

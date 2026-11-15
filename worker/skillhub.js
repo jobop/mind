@@ -117,3 +117,24 @@ async function skillHubRoute(request, env) {
   }
   return json({ error: '接口不存在' }, 404);
 }
+
+// Download a pinned Skill bundle before the Agent starts. Paths are files only, never extracted archives.
+async function skillHubBundle(input, env, request) {
+  const slug = hubSlug(input.slug), version = hubVersion(input.version);
+  const data = await hubJSON('/api/v1/skills/' + encodeURIComponent(slug) + '/files?version=' + encodeURIComponent(version), env, request);
+  const files = hubFileList(data);
+  if (!files.length || files.length > 40 || files.reduce((n, f) => n + f.size, 0) > 4 * 1024 * 1024) throw new AppError('Skill 文件超过任务限制（40 个文件 / 4MB）', 413);
+  const documents = []; let total = 0;
+  for (const file of files) {
+    const path = file.path;
+    if (!path || path.length > 240 || path.startsWith('/') || /[\\\x00-\x1f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..') || file.size > 1024 * 1024) throw new AppError('Skill 文件路径或大小不受支持');
+    const result = await hubFetch('/api/v1/skills/' + encodeURIComponent(slug) + '/file?' + new URLSearchParams({ path, version }), env, request, { file: true, limit: 1024 * 1024 });
+    const digest = await crypto.subtle.digest('SHA-256', result.bytes), sha256 = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+    if (!/^[a-f0-9]{64}$/.test(file.sha256) || sha256 !== file.sha256) throw new AppError('Skill 文件完整性校验失败', 502, 'SKILLHUB_INTEGRITY');
+    total += result.bytes.length; if (total > 4 * 1024 * 1024) throw new AppError('Skill 文件总大小超过 4MB', 413);
+    // Base64 preserves script and binary reference files without interpreting them on the host.
+    let binary = ''; for (let i = 0; i < result.bytes.length; i += 16384) binary += String.fromCharCode(...result.bytes.slice(i, i + 16384));
+    documents.push({ path, base64: btoa(binary), sha256 });
+  }
+  return { slug, version, files: documents };
+}

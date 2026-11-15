@@ -67,7 +67,7 @@ async function encryptionKey(env) {
 }
 async function seal(connection, request, env) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = encoder.encode(JSON.stringify({ ...connection, expires: Date.now() + SESSION_AGE * 1000, owner: request.headers.get('oai-authenticated-user-id') || '' }));
+  const plaintext = encoder.encode(JSON.stringify({ ...connection, expires: Date.now() + SESSION_AGE * 1000, owner: env.PROJECT_SERVICE ? env.PROJECT_SERVICE.user(request).id : request.headers.get('oai-authenticated-user-id') || '' }));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: encoder.encode(new URL(request.url).origin) }, await encryptionKey(env), plaintext);
   return b64(iv) + '.' + b64(new Uint8Array(ciphertext));
 }
@@ -78,7 +78,7 @@ async function connection(request, env, required = true) {
       const [iv, cipher] = cookie.split('.');
       const result = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv), additionalData: encoder.encode(new URL(request.url).origin) }, await encryptionKey(env), unb64(cipher));
       const data = JSON.parse(decoder.decode(result));
-      if (data.expires > Date.now() && data.owner === (request.headers.get('oai-authenticated-user-id') || '')) return { ...data, source: 'session' };
+      if (data.expires > Date.now() && data.owner === (env.PROJECT_SERVICE ? env.PROJECT_SERVICE.user(request, false)?.id : request.headers.get('oai-authenticated-user-id') || '')) return { ...data, source: 'session' };
     } catch { /* An expired or invalid session must never expose credentials. */ }
   }
   if (env.MODEL_API_KEY && env.MODEL_BASE_URL && env.MODEL_NAME) {
@@ -95,8 +95,8 @@ function checkOrigin(request) {
     throw new AppError('请求来源验证失败，请刷新页面后重试', 403, 'INVALID_ORIGIN');
   }
 }
-function acquire(request) {
-  const id = request.headers.get('oai-authenticated-user-id') || request.headers.get('CF-Connecting-IP') || 'private-owner';
+function acquire(request, env) {
+  const id = env?.PROJECT_SERVICE?.user(request, false)?.id || request.headers.get('oai-authenticated-user-id') || request.headers.get('CF-Connecting-IP') || 'private-owner';
   const now = Date.now();
   if (requests.size > 1000) for (const [key, value] of requests) if (now - value.start > 120000) requests.delete(key);
   let state = requests.get(id);
@@ -178,15 +178,17 @@ function parseBranches(content, quantity, existing) {
 }
 async function route(request, env) {
   const path = new URL(request.url).pathname;
-  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '2.1.1', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
+  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.0.0', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
   if (!path.startsWith('/api/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: '不支持的请求方法' }, 405);
     const asset = ASSETS[path === '/index.html' ? '/' : path];
     return asset ? new Response(request.method === 'HEAD' ? null : asset.body, { headers: { ...headers, 'Content-Type': asset.type } }) : new Response('Not found', { status: 404, headers });
   }
+  if (env.PROJECT_SERVICE && (path.startsWith('/api/auth/') || path === '/api/projects' || path.startsWith('/api/projects/'))) return env.PROJECT_SERVICE.handle(request);
   if (path === '/api/config' && request.method === 'GET') {
-    return json({ ...publicConnection(await connection(request, env, false)), version: '2.1.1', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
+    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.0.0', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
   }
+  if (env.PROJECT_SERVICE) env.PROJECT_SERVICE.user(request);
   if (path.startsWith('/api/skillhub/')) return skillHubRoute(request, env);
   checkOrigin(request);
   if (path === '/api/connection' && request.method === 'DELETE') {
@@ -207,7 +209,7 @@ async function route(request, env) {
     if (key.length > 1000 || /[\s\x00-\x1f\x7f]/.test(key)) throw new AppError('API Key 格式不正确');
     await encryptionKey(env);
     const c = { url, model, key };
-    const release = acquire(request);
+    const release = acquire(request, env);
     try {
       if (env.AGENT_TEST) await env.AGENT_TEST(c, request.signal);
       else await completion(c, [{ role: 'user', content: '请只回复：连接成功' }], request, { test: true });
@@ -219,7 +221,7 @@ async function route(request, env) {
   }
   if (path === '/api/test' && request.method === 'POST') {
     const c = await connection(request, env);
-    const release = acquire(request);
+    const release = acquire(request, env);
     try {
       if (env.AGENT_TEST) await env.AGENT_TEST(c, request.signal);
       else await completion(c, [{ role: 'user', content: '请只回复：连接成功' }], request, { test: true });
@@ -233,7 +235,10 @@ async function route(request, env) {
     const title = asText(input.title, '当前节点', 80);
     const note = asText(input.note ?? '', '备注', 3000, false);
     const instruction = asText(input.instruction ?? '', '补充说明', 2000, false);
-    const brief = asText(input.brief ?? '', '项目背景', 4000, false);
+    const project = env.PROJECT_SERVICE ? env.PROJECT_SERVICE.get(request, input.projectId) : null;
+    const projectSkills = project?.skills.filter(s => s.enabled !== false);
+    if (project && !projectSkills.length) throw new AppError('请先为当前项目添加并启用至少一个 Skill');
+    const brief = project ? project.brief : asText(input.brief ?? '', '项目背景', 4000, false);
     const selectedSkill = input.skill ?? { id: 'general' };
     if (!selectedSkill || typeof selectedSkill !== 'object' || Array.isArray(selectedSkill)) throw new AppError('Skill 格式不正确');
     let skill = DOMAIN_SKILLS.find(s => s.id === selectedSkill.id);
@@ -257,7 +262,7 @@ async function route(request, env) {
     const providedSources = input.providedSources ?? [];
     if (!Array.isArray(providedSources) || providedSources.length > 5 || providedSources.some(s => !s || typeof s.url !== 'string' || s.url.length > 2000 || typeof s.title !== 'string' || s.title.length > 200)) throw new AppError('参考来源格式不正确');
     const job = { topic, title, note, brief, instruction, mode: input.mode, quantity: input.quantity, existing: input.existing, ancestors: input.ancestors, ancestorContext: input.ancestors.map((name, i) => ({ title: name, note: (ancestorNotes[i] || '').slice(0, 400) })).slice(-8), providedSources };
-    const release = acquire(request);
+    const release = acquire(request, env);
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal]);
     async function hubCall(path, payload) {
@@ -272,7 +277,7 @@ async function route(request, env) {
       read: payload => hubCall('/api/skillhub/read', payload),
     };
     async function execute(emit) {
-      const result = await env.AGENT_RUNNER({ connection: c, job, skill, signal, hub, emit });
+      const result = await env.AGENT_RUNNER({ connection: c, job: { ...job, project: project ? { id: project.id, name: project.name } : null }, skill, skills: projectSkills, signal, hub, emit });
       if (signal.aborted) throw new AppError('Agent 已取消', 499, 'CANCELLED');
       const children = parseBranches(JSON.stringify({ children: result.children }), input.quantity, input.existing);
       if (!result.agent || result.agent.framework !== 'pi-agent-core') throw new AppError('Agent 运行结果缺少框架信息', 502, 'INVALID_AGENT_RESULT');
@@ -303,10 +308,11 @@ export default {
   async fetch(request, env) {
     try { return await route(request, env); }
     catch (error) {
-      if (error instanceof AppError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof AppError || error.status && error.code) return json({ error: error.message, code: error.code }, error.status);
       if (error.code?.startsWith('AGENT') || ['CANCELLED', 'TOOLS_REQUIRED'].includes(error.code)) return json({ error: error.message, code: error.code }, error.code === 'CANCELLED' ? 499 : 502);
       // Do not return provider payloads, request bodies, keys or stack traces.
       return json({ error: '服务暂时不可用，请稍后重试', code: 'INTERNAL_ERROR' }, 500);
     }
   },
 };
+export { skillHubBundle };

@@ -10,3 +10,5 @@ dist/
 *.tgz
 *.tar.gz
 downloads/
+.sandbox-build/
+sandbox-runtime.tar.gz

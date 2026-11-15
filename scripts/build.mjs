@@ -6,6 +6,7 @@ for (const [path, file, type] of [
   ['/app.js', 'app.js', 'text/javascript; charset=utf-8'],
   ['/style.css', 'style.css', 'text/css; charset=utf-8'],
   ['/skills.js', 'skills.js', 'text/javascript; charset=utf-8'],
+  ['/projects.js', 'projects.js', 'text/javascript; charset=utf-8'],
   ['/skillhub.js', 'skillhub.js', 'text/javascript; charset=utf-8'],
 ]) assets[path] = { body: await readFile(new URL('../web/' + file, import.meta.url), 'utf8'), type };
 const worker = await readFile(new URL('../worker/index.js', import.meta.url), 'utf8');

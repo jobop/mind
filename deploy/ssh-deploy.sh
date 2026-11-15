@@ -48,6 +48,16 @@ remote_archive="$remote_dir/mind-release.tar.gz"
 remote_script="$remote_dir/remote-install.sh"
 "${auth[@]}" scp "${ssh_options[@]}" -P "$port" mind-release.tar.gz "$user@$host:$remote_archive"
 "${auth[@]}" scp "${ssh_options[@]}" -P "$port" ../deploy/remote-install.sh "$user@$host:$remote_script"
+if [[ -n ${E2B_API_KEY:-} ]]; then
+  python3 - "$work/e2b-settings.json" <<'PYCONFIG'
+import os,sys,json
+value=os.environ['E2B_API_KEY']
+if not value or len(value)>1000 or any(c.isspace() for c in value):raise SystemExit('Invalid E2B credential format')
+with open(sys.argv[1],'w') as file:json.dump({'E2B_API_KEY':value,'E2B_TEMPLATE_ID':os.environ.get('E2B_TEMPLATE_ID','')},file)
+os.chmod(sys.argv[1],0o600)
+PYCONFIG
+  "${auth[@]}" scp "${ssh_options[@]}" -P "$port" "$work/e2b-settings.json" "$user@$host:$remote_dir/e2b-settings.json"
+fi
 printf -v command '%q ' bash "$remote_script" "$remote_archive" "$domain" "$sha"
 "${auth[@]}" ssh "${ssh_options[@]}" -p "$port" "$user@$host" "$command"
 curl --fail --silent --show-error --retry 5 --retry-delay 5 --max-time 20 "https://$domain/healthz" > "$work/health.json"

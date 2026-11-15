@@ -51,9 +51,18 @@ jobs:
         env:
           DEPLOY_ARCH: ${{ inputs.architecture }}
         run: npm run package:release -- --sha "$GITHUB_SHA" --arch "$DEPLOY_ARCH"
+      - name: Verify real E2B isolation when the platform key is configured
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy'
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          E2B_TEMPLATE_ID: ${{ vars.E2B_TEMPLATE_ID }}
+        run: |
+          if [ -n "$E2B_API_KEY" ]; then node scripts/smoke-e2b.mjs; else echo 'E2B key not configured; real sandbox smoke test skipped.'; fi
       - name: Deploy through SSH and verify HTTPS
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          E2B_TEMPLATE_ID: ${{ vars.E2B_TEMPLATE_ID }}
           DEPLOY_HOST: ${{ vars.ALIYUN_HOST || '47.90.84.89' }}
           DEPLOY_USER: ${{ vars.ALIYUN_USER || 'root' }}
           DEPLOY_PORT: ${{ vars.ALIYUN_PORT || '22' }}

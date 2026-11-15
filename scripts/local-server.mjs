@@ -4,8 +4,12 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { ProjectService } from '../runtime/projects.mjs';
+import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
-import worker from '../dist/server/index.js';
+import worker, { skillHubBundle } from '../dist/server/index.js';
+import { prepareSkillSnapshot } from '../runtime/skill-snapshot.mjs';
+import { runE2BAgent } from '../runtime/e2b-runner.mjs';
 import { runPiAgent } from '../runtime/pi-agent.mjs';
 import { testPiConnection } from '../runtime/pi-model.mjs';
 
@@ -23,7 +27,15 @@ export async function localEnvironment() {
   }
   let release = process.env.RELEASE_SHA || '';
   if (!release) { try { release = (await readFile(new URL('../RELEASE', import.meta.url), 'utf8')).trim(); } catch {} }
-  return { PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN || '', RELEASE_SHA: release, CONNECTION_ENCRYPTION_KEY: secret, SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '', AGENT_RUNNER: runPiAgent, AGENT_TEST: testPiConnection };
+  const projects = new ProjectService(fileURLToPath(new URL('projects.sqlite', dataDir)));
+  const sandboxConfigured = !!process.env.E2B_API_KEY;
+  const agentRunner = async args => {
+    if (!sandboxConfigured) throw Object.assign(new Error('平台尚未配置 E2B 沙箱，请维护者配置 E2B_API_KEY'), { code: 'AGENT_SANDBOX_NOT_CONFIGURED' });
+    const prepared = await prepareSkillSnapshot({ skills: args.skills, projectId: args.job.project.id, cacheDirectory: fileURLToPath(new URL('skill-cache/', dataDir)), signal: args.signal, emit: args.emit,
+      loadBundle: source => skillHubBundle(source, { SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '' }, new Request('https://mind.internal/api/skillhub/bundle', { signal: args.signal })) });
+    return runE2BAgent({ apiKey: process.env.E2B_API_KEY, template: process.env.E2B_TEMPLATE_ID || '', runtimeArchive: fileURLToPath(new URL('../sandbox-runtime.tar.gz', import.meta.url)), ...args, skills: prepared });
+  };
+  return { SANDBOX_CONFIGURED: sandboxConfigured, PROJECT_SERVICE: projects, PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN || '', RELEASE_SHA: release, CONNECTION_ENCRYPTION_KEY: secret, SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '', AGENT_RUNNER: agentRunner, AGENT_TEST: testPiConnection };
 }
 export function createLocalServer(env) {
   let publicOrigin = null;

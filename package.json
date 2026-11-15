@@ -1,6 +1,6 @@
 {
   "name": "branch-ai-mindmap",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,11 +8,14 @@
     "test": "node scripts/test.mjs",
     "start": "node scripts/bootstrap.mjs",
     "start:production": "node scripts/local-server.mjs",
-    "package:release": "node deploy/package-release.mjs"
+    "package:release": "node deploy/package-release.mjs",
+    "sandbox:bundle": "node scripts/bundle-sandbox.mjs",
+    "test:e2b": "node scripts/smoke-e2b.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
+    "e2b": "2.64.0",
     "ipaddr.js": "2.3.0"
   },
   "engines": {

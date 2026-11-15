@@ -55,3 +55,13 @@ systemctl status certbot.timer
 ```
 
 生产模式通过 `PUBLIC_ORIGIN=https://mind.made-world.link` 校验 Host 和请求来源，保留 Secure、HttpOnly Cookie。导图仍保存在使用者浏览器，模型凭据由使用者在页面自行配置；从 localhost 切换到线上域名时需通过 JSON 导入原导图。
+
+## 3.0 平台 E2B 与项目数据
+
+新增必需的 Actions Secret：`E2B_API_KEY`。这是平台账户，网页用户不需要填写。可选仓库 Variable：`E2B_TEMPLATE_ID`（默认 base；自定义模板需有 user 账号、bash、tar、Python3）。
+
+部署会将凭证独立传到 0600 的 `/etc/mind/mind.env`，不打入源码和发布归档。服务器无需启动 Docker；Pi Agent 与脚本在每次任务新建的 E2B VM 内运行。阿里云服务只负责账号、项目、文件准备、受限代理和任务生命周期。
+
+平台 Secret 配置后，工作流会在部署前创建两个真实 E2B 沙箱，验证 Skill 文件、实际 Pi 循环、脚本结果、任务隔离和销毁。使用受控模型响应，消耗少量 E2B 运行时间，不调用付费 LLM。失败时阻止发布。
+
+持久数据新增 `/var/lib/mind/projects.sqlite`（及 WAL/SHM）和 `skill-cache/`。新版本只创建表，不删除旧版浏览器数据。用户登录后显式迁移旧版 localStorage 导图。

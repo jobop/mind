@@ -125,3 +125,36 @@ test('a different successful webpage does not hide a failed webpage, and raw err
     assert.match(events.find(e => e.type === 'tool_end' && !e.ok).reason, /外部服务/);
   } finally { globalThis.fetch = saved; }
 });
+
+test('project Agent lists the isolated catalogue, selects multiple methods and never exposes other SkillHub tools', async () => {
+  const saved = globalThis.fetch, events = [], requests = [];
+  const nodes = children.map(c => ({ ...c, sourceIds: [] }));
+  const skills = [{ id: 'design', name: '游戏设计', description: '玩法与反馈', version: '1', content: '围绕玩法循环、反馈与玩家动机分析。' }, { id: 'research', name: '用户研究', description: '访谈', version: '1', content: '区分事实与假设，设计实验。' }, { id: 'disabled', name: '停用方法', enabled: false, content: 'must-not-leak' }];
+  const script = [[first[0], first[1], { name: 'list_project_skills', args: {} }], [{ name: 'read_skill', args: { id: 'design' } }, { name: 'read_skill', args: { id: 'research' } }], [{ name: 'validate_branches', args: { children: nodes } }], [{ name: 'submit_branches', args: { children: nodes } }]];
+  globalThis.fetch = async (url, options) => {
+    const payload = JSON.parse(options.body); requests.push(payload);
+    assert.ok(payload.tools.some(t => t.function.name === 'list_project_skills'));
+    assert.ok(!payload.tools.some(t => ['search_skillhub','inspect_skillhub','read_skillhub_files'].includes(t.function.name)));
+    assert.doesNotMatch(options.body, /must-not-leak/);
+    return sseMessage(script.shift());
+  };
+  try {
+    const result = await runPiAgent({ connection, job: { ...job, project: { id: 'project1', name: '游戏项目' } }, skill, skills, hub, emit: e => events.push(e) });
+    assert.deepEqual(result.agent.selectedSkills.map(s => s.id), ['design','research']); assert.equal(result.agent.projectId, 'project1');
+    assert.equal(events.filter(e => e.type === 'skill_selected').length, 2);
+    assert.ok(requests[1].messages.some(m => m.role === 'tool' && m.content.includes('用户研究')));
+    assert.ok(requests[2].messages.some(m => m.role === 'tool' && m.content.includes('围绕玩法循环')));
+  } finally { globalThis.fetch = saved; }
+});
+test('a foreign Skill ID cannot be read and cannot satisfy the project generation prerequisite', async () => {
+  const saved = globalThis.fetch, events = [];
+  const nodes = children.map(c => ({ ...c, sourceIds: [] }));
+  const script = [[first[0], first[1], { name: 'list_project_skills', args: {} }], [{ name: 'read_skill', args: { id: 'foreign-project-skill' } }], [{ name: 'validate_branches', args: { children: nodes } }]];
+  globalThis.fetch = async () => sseMessage(script.shift());
+  try {
+    await assert.rejects(runPiAgent({ connection, job, skill, skills: [{ ...skill, id: 'allowed' }], hub, emit: e => events.push(e), limits: { modelCalls: 3, toolCalls: 20, pages: 5, timeoutMs: 5000 } }), e => e.code === 'AGENT_LIMIT');
+    assert.ok(events.some(e => e.type === 'tool_end' && e.tool === 'read_skill' && !e.ok));
+    assert.ok(events.some(e => e.type === 'tool_end' && e.tool === 'validate_branches' && !e.ok));
+    assert.equal(events.some(e => e.type === 'skill_selected'), false);
+  } finally { globalThis.fetch = saved; }
+});

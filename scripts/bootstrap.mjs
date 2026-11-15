@@ -11,6 +11,7 @@ try {
   for (const [name, version, entry] of [
     ['@earendil-works/pi-agent-core', '1.5.2', 'dist/index.js'],
     ['@earendil-works/pi-ai', '1.5.2', 'dist/index.js'],
+    ['e2b', '2.64.0', 'dist/index.js'],
     ['ipaddr.js', '2.3.0', 'lib/ipaddr.js'],
   ]) {
     const directory = new URL('../node_modules/' + name + '/', import.meta.url);
