@@ -2,7 +2,9 @@ import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import worker from '../dist/server/index.js';
 import { runPiAgent } from '../runtime/pi-agent.mjs';
 import { testPiConnection } from '../runtime/pi-model.mjs';
@@ -37,6 +39,20 @@ const server = http.createServer(async (req, res) => {
     const allowedHosts = publicOrigin ? [new URL(publicOrigin).host] : ['localhost:' + port, '127.0.0.1:' + port];
     if (!allowedHosts.includes(authority.toLowerCase())) {
       res.writeHead(403); res.end('Invalid host.'); return;
+    }
+    const download = new Map(Object.entries({
+      '/downloads/mind-source.zip': { file: 'mind-source.zip', type: 'application/zip' },
+      '/downloads/mind-source.sha256': { file: 'mind-source.sha256', type: 'text/plain; charset=utf-8' },
+    })).get(new URL(req.url, 'http://localhost').pathname);
+    if (download) {
+      if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return; }
+      const directory = env.SOURCE_DOWNLOAD_DIR ? pathToFileURL(resolve(env.SOURCE_DOWNLOAD_DIR) + '/') : new URL('../downloads/', import.meta.url);
+      const file = new URL(download.file, directory);
+      let info;
+      try { info = await stat(file); } catch (error) { if (error.code !== 'ENOENT') throw error; res.writeHead(404); res.end('Source package is not published in this release.'); return; }
+      res.writeHead(200, { 'Content-Type': download.type, 'Content-Length': info.size, 'Content-Disposition': 'attachment; filename="' + download.file + '"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      if (req.method === 'HEAD') res.end(); else await pipeline(createReadStream(file), res);
+      return;
     }
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers)) if (value) headers.set(name, Array.isArray(value) ? value.join(', ') : value);

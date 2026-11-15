@@ -171,3 +171,17 @@ test('broken Agent stream preserves original nodes and surfaces the failure', as
   await run('generate()');
   assert.equal(run('count(map().root)'), 1); assert.equal(run('failedRequest.error'), '工具执行失败');
 });
+
+test('tool failure reasons and recovery status survive history restoration', () => {
+  const { run } = app();
+  run("showAgentEvent({type:'tool_end',id:'bad-plan',tool:'plan_work',label:'制定执行计划',ok:false,reason:'计划格式未通过校验'})");
+  assert.match(run("$('agentTrace').children[0].textContent"), /原因：计划格式/);
+  assert.equal(run("$('agentTrace').children[0].className"), 'agent-failed');
+  run("showAgentEvent({type:'tool_recovered',tool:'plan_work',label:'制定执行计划',ids:['bad-plan'],count:1})");
+  assert.match(run("$('agentTrace').children[0].textContent"), /后续已修复/);
+  assert.equal(run("$('agentTrace').children[0].className"), '');
+  run("map().agentRuns=[{runId:'recovered-run',modelCalls:3,recoveredFailures:1,unresolvedFailures:0,steps:agentEvents.slice(),sources:[]}];agentTraceMapId=null;restoreAgentView(map().root)");
+  assert.match(run("$('agentRunStatus').textContent"), /已修复 1 次/);
+  assert.match(run("$('agentTrace').children[0].textContent"), /后续已修复/);
+  assert.match(run("agentSummary({modelCalls:3,unresolvedFailures:1})"), /1 次工具失败未恢复/);
+});

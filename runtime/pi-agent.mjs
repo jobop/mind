@@ -7,6 +7,29 @@ export const AGENT_LIMITS = Object.freeze({ modelCalls: 8, toolCalls: 20, pages:
 export class AgentRunError extends Error {
   constructor(message, code = 'AGENT_ERROR') { super(message); this.code = code; }
 }
+export function publicToolFailure(toolName, result) {
+  const text = (result?.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+  if (/output token limit|arguments may be truncated/i.test(text)) return '模型输出达到长度上限，工具参数可能不完整';
+  if (/validation|invalid arguments|expected|参数/i.test(text)) {
+    if (toolName === 'plan_work') return '计划参数格式未通过校验：steps 需包含 2–6 条文字步骤，每条最多 160 字符';
+    return '模型给出的工具参数未通过格式校验';
+  }
+  if (/先制定计划并读取节点上下文及 Skill/.test(text)) return '缺少前置步骤：需要先完成计划、节点上下文和 Skill 读取';
+  if (/先用 validate_branches/.test(text)) return '当前分支还没有通过校验，需要先修订并重新检查';
+  if (/上限/.test(text)) return '已达到本次任务的执行或读取上限';
+  if (/内网|非公网|公网 HTTPS/.test(text)) return '网页地址不符合公网 HTTPS 读取限制';
+  if (/超时|timeout|timed out|abort/i.test(text)) return '工具请求超时或已取消';
+  if (/SkillHub|无法连接|fetch failed|network/i.test(text)) return '外部服务暂时无法访问';
+  if (/网页返回 HTTP/.test(text)) return '目标网页返回了非成功状态';
+  return '工具执行未通过，错误反馈已交给 Agent 处理';
+}
+function recoveryKey(name, args = {}) {
+  if (name === 'read_public_page') return name + ':' + JSON.stringify(args?.url);
+  if (name === 'search_skillhub') return name + ':' + JSON.stringify(args?.keyword);
+  if (name === 'inspect_skillhub') return name + ':' + JSON.stringify(args?.slug);
+  if (name === 'read_skillhub_files') return name + ':' + JSON.stringify([args?.slug, args?.version, args?.paths]);
+  return name;
+}
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const textResult = (details, terminate = false) => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details, ...(terminate ? { terminate: true } : {}) });
@@ -50,6 +73,7 @@ export async function runPiAgent({ connection, job, skill, signal, emit = () => 
   let modelCalls = 0, toolCalls = 0, pages = 0, plan = null, contextRead = false, skillRead = false, validated = null, submitted = null, noToolTurns = 0;
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   const steps = [];
+  const failures = [], pendingKeys = new Map();
   function notify(type, data = {}) {
     const event = { type, at: new Date().toISOString(), ...data };
     if (steps.length < 80) steps.push(event);
@@ -135,8 +159,24 @@ export async function runPiAgent({ connection, job, skill, signal, emit = () => 
   });
   const onAbort = () => agent.abort(); controller.signal.addEventListener('abort', onAbort, { once: true });
   agent.subscribe(event => {
-    if (event.type === 'tool_execution_start') notify('tool_start', { id: event.toolCallId, tool: event.toolName, label: labels.get(event.toolName) || '调用工具' });
-    if (event.type === 'tool_execution_end') notify('tool_end', { id: event.toolCallId, tool: event.toolName, label: labels.get(event.toolName) || '工具', ok: !event.isError });
+    if (event.type === 'tool_execution_start') {
+      pendingKeys.set(event.toolCallId, recoveryKey(event.toolName, event.args));
+      notify('tool_start', { id: event.toolCallId, tool: event.toolName, label: labels.get(event.toolName) || '调用工具' });
+    }
+    if (event.type === 'tool_execution_end') {
+      const key = pendingKeys.get(event.toolCallId), label = labels.get(event.toolName) || '工具';
+      const reason = event.isError ? publicToolFailure(event.toolName, event.result) : undefined;
+      if (event.isError) failures.push({ id: event.toolCallId, tool: event.toolName, key, reason, recovered: false });
+      notify('tool_end', { id: event.toolCallId, tool: event.toolName, label, ok: !event.isError, ...(reason ? { reason } : {}) });
+      if (!event.isError && event.result?.details?.valid !== false) {
+        const repaired = failures.filter(f => !f.recovered && f.key === key);
+        if (repaired.length) {
+          repaired.forEach(f => { f.recovered = true; });
+          notify('tool_recovered', { tool: event.toolName, label, ids: repaired.map(f => f.id), count: repaired.length });
+        }
+      }
+      pendingKeys.delete(event.toolCallId);
+    }
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       for (const key of Object.keys(usage)) usage[key] += event.message.usage?.[key] || 0;
     }
@@ -157,8 +197,9 @@ export async function runPiAgent({ connection, job, skill, signal, emit = () => 
       title: node.title,
       note: node.note + (node.sourceIds.length ? '\n\n参考来源：\n' + node.sourceIds.map(id => { const s = evidence.get(id); return '[' + id + '] ' + s.title.slice(0, 120); }).join('\n') : '\n\n依据：用户提供的背景与领域 Skill；未进行独立网页核实。'),
     }));
-    notify('completed', { runId, modelCalls, toolCalls, sources: sources.length });
-    return { children, model: connection.model, skill: { id: skill.id, name: skill.name, version: skill.version }, generatedAt: new Date().toISOString(), agent: { framework: 'pi-agent-core', version: '1.5.2', runId, startedAt, finishedAt: new Date().toISOString(), modelCalls, toolCalls, usage, plan, steps, sources } };
+    const toolFailures = failures.length, recoveredFailures = failures.filter(f => f.recovered).length, unresolvedFailures = toolFailures - recoveredFailures;
+    notify('completed', { runId, modelCalls, toolCalls, sources: sources.length, toolFailures, recoveredFailures, unresolvedFailures });
+    return { children, model: connection.model, skill: { id: skill.id, name: skill.name, version: skill.version }, generatedAt: new Date().toISOString(), agent: { framework: 'pi-agent-core', version: '1.5.2', runId, startedAt, finishedAt: new Date().toISOString(), modelCalls, toolCalls, toolFailures, recoveredFailures, unresolvedFailures, usage, plan, steps, sources } };
   } catch (error) {
     if (controller.signal.aborted) throw new AgentRunError(timedOut ? 'Agent 已达到180秒运行上限，原脑图已保留' : 'Agent 已取消，原脑图已保留', timedOut ? 'AGENT_TIMEOUT' : 'CANCELLED');
     if (error instanceof AgentRunError) throw error;

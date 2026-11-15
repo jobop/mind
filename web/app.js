@@ -338,6 +338,12 @@ function renderAgentSources(sources) {
     link.href = source.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('agentSources').append(link);
   }
 }
+function agentSummary(run, prefix = '完成') {
+  let text = prefix + ' · ' + (Number(run.modelCalls) || 0) + ' 次模型调用';
+  if (run.recoveredFailures) text += ' · 已修复 ' + run.recoveredFailures + ' 次';
+  if (run.unresolvedFailures) text += ' · ' + run.unresolvedFailures + ' 次工具失败未恢复，请查看记录';
+  return text;
+}
 function restoreAgentView(node) {
   const requestedRun = node.generated?.agent?.runId;
   if (agentTraceMapId === map().id && (!requestedRun || requestedRun === agentTraceRunId)) return;
@@ -348,10 +354,10 @@ function restoreAgentView(node) {
   $('agentPanel').hidden = !run;
   if (!run) { agentTraceRunId = null; return; }
   agentTraceRunId = run.runId;
-  $('agentRunStatus').textContent = '历史记录 · ' + (Number(run.modelCalls) || 0) + ' 次模型调用';
+  $('agentRunStatus').textContent = agentSummary(run, '历史记录');
   for (const event of (Array.isArray(run.steps) ? run.steps : []).slice(-80)) {
     if (typeof event.text !== 'string') continue;
-    const item = document.createElement('li'); item.textContent = event.text.slice(0, 2000); $('agentTrace').append(item);
+    const item = document.createElement('li'); item.textContent = event.text.slice(0, 2000); if (event.failed && !event.recovered) item.className = 'agent-failed'; $('agentTrace').append(item);
   }
   renderAgentSources(Array.isArray(run.sources) ? run.sources : []);
 }
@@ -362,14 +368,24 @@ function showAgentEvent(event) {
     plan: () => '执行步骤：\n' + event.steps.map((step, i) => (i + 1) + '. ' + step).join('\n'),
     model_request: () => '模型调用 ' + event.call + ' / ' + event.max,
     tool_start: () => '开始：' + event.label,
-    tool_end: () => (event.ok ? '完成：' : '工具未成功：') + event.label,
+    tool_end: () => (event.ok ? '完成：' : '工具未成功：') + event.label + (!event.ok && event.reason ? '；原因：' + event.reason : ''),
+    tool_recovered: () => '已修复：' + event.label + '，后续重试成功',
     source: () => '已读取证据 [' + event.id + '] ' + event.title,
     validation: () => event.valid ? '分支结构与引用校验通过' : '需要修订：' + event.issues.join('；'),
     completed: () => 'Agent 已提交经过校验的分支',
   };
   if (!labels[event.type]) return;
+  if (event.type === 'tool_recovered') {
+    agentEvents.forEach((previous, index) => {
+      if (previous.failed && !previous.recovered && previous.tool === event.tool && event.ids?.includes(previous.id)) {
+        previous.recovered = true; previous.text += '（后续已修复）';
+        const item = $('agentTrace').children[index];
+        if (item) { item.textContent = previous.text; item.className = ''; }
+      }
+    });
+  }
   const text = labels[event.type]();
-  if (agentEvents.length < 80) agentEvents.push({ type: event.type, at: event.at || new Date().toISOString(), text: text.slice(0, 2000) });
+  if (agentEvents.length < 80) agentEvents.push({ type: event.type, id: event.id, tool: event.tool, failed: event.type === 'tool_end' && !event.ok, at: event.at || new Date().toISOString(), text: text.slice(0, 2000) });
   const item = document.createElement('li'); item.textContent = text;
   if (event.type === 'tool_end' && !event.ok) item.className = 'agent-failed';
   $('agentTrace').append(item); $('agentTrace').scrollTop = $('agentTrace').scrollHeight;
@@ -452,8 +468,8 @@ async function generate(snapshot) {
     target.collapsed = false; selected = target.id;
     if (result.agent) {
       agentTraceRunId = result.agent.runId;
-      targetMap.agentRuns = [{ runId: result.agent.runId, model: result.model, at: result.generatedAt, plan: result.agent.plan, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls, usage: result.agent.usage, steps: agentEvents.slice(-80), sources: result.agent.sources }, ...(targetMap.agentRuns || [])].slice(0, 10);
-      $('agentRunStatus').textContent = '完成 · ' + result.agent.modelCalls + ' 次模型调用';
+      targetMap.agentRuns = [{ runId: result.agent.runId, model: result.model, at: result.generatedAt, plan: result.agent.plan, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls, toolFailures: result.agent.toolFailures, recoveredFailures: result.agent.recoveredFailures, unresolvedFailures: result.agent.unresolvedFailures, usage: result.agent.usage, steps: agentEvents.slice(-80), sources: result.agent.sources }, ...(targetMap.agentRuns || [])].slice(0, 10);
+      $('agentRunStatus').textContent = agentSummary(result.agent);
       renderAgentSources(result.agent.sources || []);
     }
     save(); fitAfterRender = true; toast('已生成 ' + result.children.length + ' 个分支，可点击新节点继续展开');

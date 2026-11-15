@@ -178,14 +178,14 @@ function parseBranches(content, quantity, existing) {
 }
 async function route(request, env) {
   const path = new URL(request.url).pathname;
-  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '2.1.0', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
+  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '2.1.1', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
   if (!path.startsWith('/api/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: '不支持的请求方法' }, 405);
     const asset = ASSETS[path === '/index.html' ? '/' : path];
     return asset ? new Response(request.method === 'HEAD' ? null : asset.body, { headers: { ...headers, 'Content-Type': asset.type } }) : new Response('Not found', { status: 404, headers });
   }
   if (path === '/api/config' && request.method === 'GET') {
-    return json({ ...publicConnection(await connection(request, env, false)), version: '2.1.0', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
+    return json({ ...publicConnection(await connection(request, env, false)), version: '2.1.1', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
   }
   if (path.startsWith('/api/skillhub/')) return skillHubRoute(request, env);
   checkOrigin(request);

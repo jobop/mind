@@ -90,3 +90,38 @@ test('public-page tool rejects private addresses and extracts text without execu
   await assert.rejects(readPublicPage('https://public.example.org', undefined, { request: async () => ({ location: 'http://127.0.0.1/admin' }) }), /公网 HTTPS/);
   await assert.rejects(readPublicPage('https://public.example.org', undefined, { resolve: async () => [{ address: '127.0.0.1', family: 4 }] }), /内网/);
 });
+
+test('invalid plan parameters surface a safe reason and a successful retry marks the failure recovered', async () => {
+  const saved = globalThis.fetch, events = [];
+  const nodes = children.map(c => ({ ...c, sourceIds: [] }));
+  const script = [
+    [{ name: 'plan_work', args: { steps: ['only-one-step'] } }, ...first.slice(1)],
+    [first[0], { name: 'validate_branches', args: { children: nodes } }],
+    [{ name: 'submit_branches', args: { children: nodes } }],
+  ];
+  globalThis.fetch = async () => sseMessage(script.shift());
+  try {
+    const result = await runPiAgent({ connection, job, skill, hub, emit: e => events.push(e) });
+    assert.match(events.find(e => e.type === 'tool_end' && !e.ok).reason, /steps.*2–6/);
+    assert.ok(events.some(e => e.type === 'tool_recovered' && e.tool === 'plan_work'));
+    assert.equal(result.agent.toolFailures, 1); assert.equal(result.agent.recoveredFailures, 1); assert.equal(result.agent.unresolvedFailures, 0);
+  } finally { globalThis.fetch = saved; }
+});
+test('a different successful webpage does not hide a failed webpage, and raw error details stay private', async () => {
+  const saved = globalThis.fetch, events = [];
+  const nodes = children.map(c => ({ ...c, sourceIds: [] }));
+  const script = [first, [
+    { name: 'read_public_page', args: { url: 'https://example.org/fails' } },
+    { name: 'read_public_page', args: { url: 'https://example.org/works' } },
+  ], [{ name: 'validate_branches', args: { children: nodes } }], [{ name: 'submit_branches', args: { children: nodes } }]];
+  globalThis.fetch = async () => sseMessage(script.shift());
+  try {
+    const result = await runPiAgent({ connection, job, skill, hub, emit: e => events.push(e), pageReader: async url => {
+      if (url.endsWith('/fails')) throw Error('fetch failed: private-debug-secret');
+      return { url, title: '公开材料', text: '内容' };
+    } });
+    assert.equal(result.agent.recoveredFailures, 0); assert.equal(result.agent.unresolvedFailures, 1);
+    assert.doesNotMatch(JSON.stringify(events), /private-debug-secret/);
+    assert.match(events.find(e => e.type === 'tool_end' && !e.ok).reason, /外部服务/);
+  } finally { globalThis.fetch = saved; }
+});

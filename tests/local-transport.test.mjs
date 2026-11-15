@@ -103,3 +103,30 @@ test('DATA_DIR keeps the encryption key stable across application releases', asy
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('public source download serves only the fixed archive and checksum with GET and HEAD', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mind-download-test-'));
+  const { writeFile } = await import('node:fs/promises');
+  const bytes = Buffer.from('PK\x03\x04source-archive-fixture');
+  await writeFile(join(directory, 'mind-source.zip'), bytes);
+  await writeFile(join(directory, 'mind-source.sha256'), 'test-checksum  mind-source.zip\n');
+  const server = createLocalServer({ SOURCE_DOWNLOAD_DIR: directory });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  try {
+    const response = await fetch(origin + '/downloads/mind-source.zip');
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), 'application/zip');
+    assert.match(response.headers.get('Content-Disposition'), /attachment; filename="mind-source.zip"/);
+    assert.equal(response.headers.get('Content-Length'), String(bytes.length));
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    const head = await fetch(origin + '/downloads/mind-source.zip', { method: 'HEAD' });
+    assert.equal(head.status, 200); assert.equal(await head.text(), '');
+    assert.equal((await fetch(origin + '/downloads/mind-source.zip', { method: 'POST' })).status, 405);
+    assert.match(await (await fetch(origin + '/downloads/mind-source.sha256')).text(), /test-checksum/);
+    for (const path of ['/downloads/encryption-key', '/downloads/.env', '/toString']) {
+      const unknown = await fetch(origin + path);
+      assert.notEqual(unknown.status, 500); assert.doesNotMatch(await unknown.text(), /source-archive-fixture|test-checksum/);
+    }
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(directory, { recursive: true, force: true }); }
+});
