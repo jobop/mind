@@ -1,6 +1,7 @@
 import https from 'node:https';
 import { lookup } from 'node:dns/promises';
 import ipaddr from 'ipaddr.js';
+export class PublicPageError extends Error { constructor(code,message){super(message);this.code=code;} }
 
 export function isPublicAddress(address) {
   try {
@@ -11,9 +12,9 @@ export function isPublicAddress(address) {
 }
 export function publicUrl(value) {
   let url;
-  try { url = new URL(value); } catch { throw Error('网页地址无效'); }
+  try { url = new URL(value); } catch { throw new PublicPageError('PAGE_ADDRESS','网页地址无效'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.port && url.port !== '443' ||
-      !url.hostname.includes('.') || /(^|\.)(localhost|local|internal|lan|test|invalid)$/.test(url.hostname)) throw Error('只能读取公网 HTTPS 网页');
+      !url.hostname.includes('.') || /(^|\.)(localhost|local|internal|lan|test|invalid)$/.test(url.hostname)) throw new PublicPageError('PAGE_ADDRESS','只能读取公网 HTTPS 网页');
   url.hash = '';
   return url;
 }
@@ -38,7 +39,7 @@ async function requestPage(url, signal, resolve = lookup) {
     signal?.addEventListener('abort', abort, { once: true });
     Promise.resolve(resolve(url.hostname, { all: true, verbatim: true })).then(done, fail).finally(() => signal?.removeEventListener('abort', abort));
   });
-  if (!addresses.length || addresses.some(a => !isPublicAddress(a.address))) throw Error('该地址指向内网或非公网服务，不能读取');
+  if (!addresses.length || addresses.some(a => !isPublicAddress(a.address))) throw new PublicPageError('PAGE_ADDRESS','该地址指向内网或非公网服务，不能读取');
   const address = addresses[0];
   return new Promise((resolveRequest, reject) => {
     // Pin the validated DNS answer for this connection, including redirects.
@@ -53,11 +54,11 @@ async function requestPage(url, signal, resolve = lookup) {
       const status = response.statusCode || 500;
       if ([301, 302, 303, 307, 308].includes(status)) { response.resume(); resolveRequest({ status, location: response.headers.location }); return; }
       const type = String(response.headers['content-type'] || '');
-      if (status !== 200) { response.resume(); reject(Error('网页返回 HTTP ' + status)); return; }
-      if (!/^(text\/(html|plain|markdown)|application\/xhtml\+xml)(;|$)/i.test(type)) { response.resume(); reject(Error('仅支持 HTML、Markdown 和纯文本页面，不支持 PDF 或下载文件')); return; }
-      if (Number(response.headers['content-length'] || 0) > 600000) { response.destroy(); reject(Error('网页内容过大')); return; }
+      if (status !== 200) { response.resume(); reject(new PublicPageError('PAGE_HTTP','网页返回 HTTP ' + status)); return; }
+      if (!/^(text\/(html|plain|markdown)|application\/xhtml\+xml)(;|$)/i.test(type)) { response.resume(); reject(new PublicPageError('PAGE_FORMAT','仅支持 HTML、Markdown 和纯文本页面，不支持 PDF 或下载文件')); return; }
+      if (Number(response.headers['content-length'] || 0) > 600000) { response.destroy(); reject(new PublicPageError('PAGE_SIZE','网页内容过大')); return; }
       const chunks = []; let size = 0;
-      response.on('data', chunk => { size += chunk.length; if (size > 600000) { response.destroy(Error('网页内容过大')); return; } chunks.push(chunk); });
+      response.on('data', chunk => { size += chunk.length; if (size > 600000) { response.destroy(new PublicPageError('PAGE_SIZE','网页内容过大')); return; } chunks.push(chunk); });
       response.on('error', reject);
       response.on('end', () => resolveRequest({ status, type, raw: Buffer.concat(chunks).toString('utf8') }));
     });
@@ -67,12 +68,18 @@ async function requestPage(url, signal, resolve = lookup) {
 export async function readPublicPage(value, signal, { resolve, request = requestPage } = {}) {
   let url = publicUrl(value);
   const timeout = AbortSignal.timeout(18000), combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  for (let index = 0; index < 4; index++) {
+  try { for (let index = 0; index < 4; index++) {
     const result = await request(url, combined, resolve);
     if (result.location) { url = publicUrl(new URL(result.location, url).href); continue; }
     const { title, text } = pageText(result.raw, result.type);
-    if (!text.trim()) throw Error('该网页没有可提取的文本，可能需要浏览器执行 JavaScript');
+    if (!text.trim()) throw new PublicPageError('PAGE_EMPTY','该网页没有可提取的文本，可能需要浏览器执行 JavaScript');
     return { url: url.href, title: title || url.hostname, text: text.slice(0, 10000), truncated: text.length > 10000, fetchedAt: new Date().toISOString() };
   }
-  throw Error('网页重定向次数过多');
+  throw new PublicPageError('PAGE_REDIRECT','网页重定向次数过多');
+  } catch(error) {
+    if(error instanceof PublicPageError)throw error;
+    if(combined.aborted)throw new PublicPageError('PAGE_TIMEOUT','公开网页读取超过 18 秒或已取消');
+    if(['ENOTFOUND','EAI_AGAIN'].includes(error.code))throw new PublicPageError('PAGE_DNS','无法解析目标网页域名');
+    throw new PublicPageError('PAGE_NETWORK','公开网页连接失败，请检查目标是否可公开访问');
+  }
 }

@@ -292,12 +292,13 @@ function beginPinch() {
 }
 $('canvas').onpointerdown = e => {
   if (view !== 'map' || e.pointerType === 'mouse' && e.button !== 0) return;
+  if (e.pointerType === 'touch' && e.isPrimary) {if(canvasPointers.size)resetCanvasGesture();suppressCanvasClickUntil=0;}
   const onNode = e.target.closest('button');
   if (onNode && e.pointerType !== 'touch') return;
   canvasPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (canvasPointers.size >= 2) { beginPinch(); e.preventDefault(); return; }
-  if (onNode) return; // Keep ordinary taps and long presses on nodes.
-  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y, pending: !!onNode };
+  if (onNode) return; // Taps and long presses remain available until the finger starts moving.
   $('canvas').setPointerCapture(e.pointerId); $('canvas').classList.add('dragging');
 };
 $('canvas').onpointermove = e => {
@@ -310,6 +311,11 @@ $('canvas').onpointermove = e => {
     pan = { x: point.x - pinch.worldX * zoom, y: point.y - pinch.worldY * zoom };
     suppressCanvasClickUntil = Date.now() + 800; transform();
   } else if (drag?.id === e.pointerId) {
+    if (drag.pending) {
+      if (Math.hypot(e.clientX-drag.x,e.clientY-drag.y)<8) return;
+      drag.pending=false;gestureRevision++;closeContextMenu();$('canvas').setPointerCapture(e.pointerId);$('canvas').classList.add('dragging');
+    }
+    if (e.pointerType==='touch') {e.preventDefault();suppressCanvasClickUntil=Date.now()+800;}
     pan = { x: drag.px + e.clientX - drag.x, y: drag.py + e.clientY - drag.y }; transform();
   }
 };
@@ -333,6 +339,14 @@ function resetCanvasGesture() {
 $('canvas').onpointerup = endDrag; $('canvas').onpointercancel = endDrag;
 $('canvas').onlostpointercapture = e => { if (e.target === $('canvas')) endDrag(e); };
 window.addEventListener('blur', resetCanvasGesture);
+// Node rendering can remove the element that implicitly captured a touch during a long press.
+// Observe releases before retargeting/bubbling so a removed node cannot leave a phantom finger.
+window.addEventListener('pointerup', endDrag, true);
+window.addEventListener('pointercancel', endDrag, true);
+document.addEventListener('visibilitychange', () => { if(document.hidden) resetCanvasGesture(); });
+window.addEventListener('touchend', event => { if(!event.touches.length) resetCanvasGesture(); }, true);
+window.addEventListener('touchcancel', resetCanvasGesture, true);
+$('canvas').addEventListener('touchmove', event => { if(view==='map') event.preventDefault(); }, {passive:false});
 for (const type of ['click', 'dblclick']) $('canvas').addEventListener(type, e => {
   if (e.detail !== 0 && (pinch || Date.now() < suppressCanvasClickUntil)) { e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
@@ -405,7 +419,10 @@ async function api(path, payload, options = {}) {
     body: payload === undefined ? undefined : JSON.stringify(payload),
   }); } catch (cause) { const error = Error('连接暂时中断，请稍后恢复查询'); error.isTransportError = true; error.cause = cause; throw error; }
   let data;
-  try { data = await response.json(); } catch { throw Error(response.status === 401 || response.status === 403 ? '登录已过期，请刷新页面重新登录' : '服务器没有返回有效数据，请刷新后重试'); }
+  try { data = await response.json(); } catch {
+    const error=Error(response.status===401||response.status===403?'登录已过期，请刷新页面重新登录':response.status>=500?'服务连接暂时中断（HTTP '+response.status+'），正在等待恢复':'服务器返回异常数据（HTTP '+response.status+'），请稍后重试');
+    error.status=response.status;error.code='INVALID_SERVER_RESPONSE';error.isTransportError=response.status>=500||response.ok||[408,429].includes(response.status);throw error;
+  }
   if (!response.ok) { const error = Error(data.error || '请求失败，请重试'); error.code = data.code; error.status = response.status; throw error; }
   return data;
 }

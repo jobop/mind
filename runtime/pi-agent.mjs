@@ -10,6 +10,16 @@ export class AgentRunError extends Error {
 }
 export function publicToolFailure(toolName, result) {
   const text = (result?.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+  if(toolName==='read_public_page') {
+    const http=text.match(/网页返回 HTTP (\d{3})/);if(http)return '目标网页返回 HTTP '+http[1]+(http[1]==='403'?'，站点拒绝自动读取':http[1]==='404'?'，页面不存在':'，本次未读取到正文');
+    if(/仅支持 HTML|不支持 PDF 或下载文件/.test(text))return '链接指向下载文件；网页工具只支持 HTML、Markdown 和纯文本';
+    if(/没有可提取的文本/.test(text))return '页面没有可提取的正文，可能需要 JavaScript 渲染或登录';
+    if(/网页内容过大/.test(text))return '网页超过读取大小上限，请换较短页面或提供关键摘录';
+    if(/无法解析目标网页域名/.test(text))return '无法解析目标网页域名，请检查链接';
+    if(/18 秒/.test(text))return '读取公开网页超过 18 秒或已取消';
+    if(/重定向次数/.test(text))return '网页重定向次数过多，未读取正文';
+    if(/公开网页连接失败|公开网页读取未完成/.test(text))return '未能连接目标网页，可换公开可访问的链接或上传参考材料';
+  }
   if (/output token limit|arguments may be truncated/i.test(text)) return '模型输出达到长度上限，工具参数可能不完整';
   if (toolName === 'plan_work' && /计划步骤|steps/.test(text)) return '计划中没有可读取的行动步骤，请使用 steps 文字列表或带 title/action/description 的步骤对象';
   if (/validation|invalid arguments|expected|参数/i.test(text)) {

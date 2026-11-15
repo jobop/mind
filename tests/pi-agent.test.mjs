@@ -217,3 +217,14 @@ test('node references are read through an ID-scoped tool and real images reach t
     assert.ok(requests[2].messages.some(m=>m.role==='tool'&&m.content.includes('资源未加入')));
   }finally{globalThis.fetch=saved;}
 });
+
+
+test('public webpage failures expose safe actionable categories instead of raw provider details',async()=>{
+ const {publicToolFailure}=await import('../runtime/pi-agent.mjs');
+ const reason=text=>publicToolFailure('read_public_page',{content:[{type:'text',text}]});
+ assert.match(reason('网页返回 HTTP 403'),/403.*拒绝/);
+ assert.match(reason('仅支持 HTML、Markdown 和纯文本页面，不支持 PDF 或下载文件'),/下载文件/);
+ assert.match(reason('该网页没有可提取的文本，可能需要浏览器执行 JavaScript'),/JavaScript/);
+ const {PublicPageError}=await import('../runtime/public-page.mjs');
+ await assert.rejects(readPublicPage('https://example.org',undefined,{request:async()=>{throw Object.assign(Error('private request data'),{code:'ENOTFOUND'});}}),e=>e instanceof PublicPageError&&e.code==='PAGE_DNS'&&!e.message.includes('private'));
+});

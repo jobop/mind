@@ -29,7 +29,8 @@ function app(initial) {
   const elements = new Map(), store = new Map(initial ? [['branch-ai-workspace-v1', JSON.stringify(initial)]] : []);
   const storage = { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) };
   const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); }, createElement: () => new Element(), createElementNS: () => new Element(), querySelectorAll: () => [], querySelector: () => null, addEventListener() {} };
-  const context = vm.createContext({ document, window: { innerWidth: 1280, innerHeight: 800, addEventListener() {} }, crypto: webcrypto, localStorage: storage, sessionStorage: storage, ResizeObserver: class { observe() {} }, requestAnimationFrame: fn => fn(), setTimeout: () => 0, clearTimeout() {}, URL, Blob, TextDecoder, AbortController, console, fetch: async () => Response.json({ configured: false }) });
+  const listeners={};
+  const context = vm.createContext({ document, window: { innerWidth: 1280, innerHeight: 800, addEventListener(type,fn) {(listeners[type] ||= []).push(fn);}, dispatchEvent(event){for(const fn of listeners[event.type]||[])fn(event);} }, crypto: webcrypto, localStorage: storage, sessionStorage: storage, ResizeObserver: class { observe() {} }, requestAnimationFrame: fn => fn(), setTimeout: () => 0, clearTimeout() {}, URL, Blob, TextDecoder, AbortController, console, fetch: async () => Response.json({ configured: false }) });
   vm.runInContext(skillsSource, context);
   vm.runInContext(source, context);
   vm.runInContext(hubSource, context);
@@ -266,4 +267,27 @@ test('pinch clamps zoom and resets on cancellation, view change and lost capture
   run(`switchView('map');$('canvas').onpointerdown(touch(5,20,20));$('canvas').onlostpointercapture({pointerId:5,target:$('canvas')});`);
   assert.equal(run('canvasPointers.size'), 0);
   assert.equal(run('drag'), null);
+});
+
+
+test('a long-press release outside the replaced node clears the pointer before the next single-finger drag',()=>{
+ const {run}=app();
+ run(`zoom=1;pan={x:0,y:0};function touch(id,x,y){return {pointerId:id,pointerType:'touch',isPrimary:true,clientX:x,clientY:y,target:{closest:()=>({})},preventDefault(){}};}
+   $('canvas').onpointerdown(touch(1,100,100));window.dispatchEvent({type:'pointerup',pointerId:1,target:{}});`);
+ assert.equal(run('canvasPointers.size'),0);
+ run(`$('canvas').onpointerdown(touch(2,100,100));$('canvas').onpointermove(touch(2,130,120));`);
+ assert.equal(run('zoom'),1);assert.equal(run('pan.x'),30);assert.equal(run('pan.y'),20);
+ run(`$('canvas').onpointerdown(touch(3,200,200));`); // Browser starts a new primary touch after a lost release.
+ assert.equal(run('canvasPointers.size'),1);assert.equal(run('pinch'),null);
+ run(`$('canvas').onpointermove(touch(3,220,210));`);
+ assert.equal(run('zoom'),1);assert.equal(run('pan.x'),50);assert.equal(run('pan.y'),30);
+ run(`window.dispatchEvent({type:'touchend',touches:[]});`);assert.equal(run('canvasPointers.size'),0);
+});
+
+test('non-JSON gateway errors preserve HTTP status and are retryable without exposing upstream content',async()=>{
+ const {run}=app();
+ run("fetch=async()=>({ok:false,status:502,json:async()=>{throw Error('private upstream body')}})");
+ await assert.rejects(run("api('/api/generate')"),error=>error.status===502&&error.isTransportError===true&&!error.message.includes('private'));
+ run("fetch=async()=>({ok:false,status:401,json:async()=>{throw Error('private login html')}})");
+ await assert.rejects(run("api('/api/config')"),error=>error.status===401&&error.isTransportError===false&&error.message.includes('登录'));
 });

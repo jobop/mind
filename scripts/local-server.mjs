@@ -100,8 +100,8 @@ const server = http.createServer(async (req, res) => {
     res.end();
   } catch {
     if (res.destroyed) return;
-    if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('本地服务异常，请重启后重试。');
+    if (!res.headersSent) {res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control':'no-store' });res.end(JSON.stringify({error:'服务暂时不可用，请稍后重试',code:'INTERNAL_ERROR'}));}
+    else res.end();
   }
 });
   return server;

@@ -3,7 +3,7 @@ import { Sandbox } from 'e2b';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { brokerModel, modelHttpError, ModelTransportError } from './model-transport.mjs';
-import { readPublicPage } from './public-page.mjs';
+import { readPublicPage, PublicPageError } from './public-page.mjs';
 import { AgentRunError } from './pi-agent.mjs';
 export { brokerModel };
 let active = 0;
@@ -54,10 +54,10 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
         } else throw Error('未知沙箱请求');
         await send({ type: 'rpc_result', id: message.id, result: response });
       } catch (error) {
-        const known = error instanceof ModelTransportError;
+        const known = error instanceof ModelTransportError || error instanceof PublicPageError;
         const messageText = known ? error.message : message.operation === 'model' ? '模型代理调用未完成，请检查连接和任务预算' : message.operation === 'reference' ? '参考资源读取失败，请检查链接、仓库分支、凭证或文件是否仍在项目中' : '公开网页读取未完成';
         if (message.operation === 'model') { lastModelFailure = known ? error : new ModelTransportError('AGENT_MODEL_PROXY',messageText); emit({type:'model_error',code:lastModelFailure.code,reason:messageText}); }
-        await send({type:'rpc_result',id:message.id,error:messageText,code:known?error.code:'AGENT_MODEL_PROXY'});
+        await send({type:'rpc_result',id:message.id,error:messageText,code:known?error.code:message.operation==='model'?'AGENT_MODEL_PROXY':'AGENT_TOOL_PROXY'});
       }
     } else if (message.type === 'result') {
       if (Buffer.byteLength(JSON.stringify(message.result)) > 600000) throw Error('任务结果超过限制');

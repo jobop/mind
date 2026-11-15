@@ -15,7 +15,7 @@ lines.on('line', async line => {
   try {
     const message = JSON.parse(line);
     if (modelStream.handle(message)) return;
-    if (message.type === 'rpc_result') { const p = pending.get(message.id); if (p) { pending.delete(message.id); message.error ? p.fail(Error(message.error)) : p.done(message.result); } return; }
+    if (message.type === 'rpc_result') { const p = pending.get(message.id); if (p) { pending.delete(message.id); message.error ? p.fail(Object.assign(Error(message.error),{code:message.code})) : p.done(message.result); } return; }
     if (message.type !== 'start' || started) return; started = true;
     const { job, connection, skills } = JSON.parse(await readFile('/workspace/task/input.json', 'utf8'));
     await unlink('/workspace/task/input.json');

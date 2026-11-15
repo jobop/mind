@@ -1,3 +1,4 @@
+import { PublicPageError } from '../runtime/public-page.mjs';
 // Real E2B VMs and real Pi SDK, with controlled SSE model responses (no paid LLM request).
 import { platformE2BKey } from '../runtime/platform-config.mjs';
 import { buildMapContext } from '../runtime/map-context.mjs';
@@ -22,7 +23,7 @@ async function task(marker) {
   const script = [
     [{name:'plan_work',args:{steps:['读取项目目录与方法','执行本地验证并校验分支']}},{name:'read_node_context',args:{}},{name:'list_project_skills',args:{}}],
     [{name:'read_skill',args:{id:'method'}}],
-    [{name:'read_reference',args:{id:referenceId}}],
+    [{name:'read_public_page',args:{url:'https://example.org/blocked'}},{name:'read_reference',args:{id:referenceId}}],
     [{name:'run_command',args:{command:'python3 ' + directory + '/scripts/check.py'}}],
     [{name:'validate_branches',args:{children}}],
     [{name:'submit_branches',args:{children}}],
@@ -37,10 +38,12 @@ async function task(marker) {
       console.error('E2B create diagnostic: '+error.name+' — '+message.slice(0,600));throw error;
     }},
     emit:event=>{events.push(event);if(event.type==='sandbox_created')taskIds.push(event.taskId);console.log(marker + ': ' + event.type + (event.tool ? ' '+event.tool : '') + (event.reason ? ' '+event.reason : ''));},
+    pageReader:async()=>{throw new PublicPageError('PAGE_HTTP','网页返回 HTTP 403');},
     referenceReader:async(id)=>{assert.equal(id,referenceId);sawReference=true;return {title:marker+'图片',url:'https://example.org/image.png',description:marker,image:{data:image,mimeType:'image/png'}};},
     modelProxy:async(connection,raw,signal,onStream)=>{const body=JSON.parse(raw);assert.equal(body.max_tokens,expectedOutputBudget);if(JSON.stringify(body.messages).includes('data:image/png;base64,'+image))sawImage=true;if(body.messages.some(m=>{if(m.role!=='tool')return false;try{return JSON.parse(m.content).output?.trim()===marker;}catch{return false;}}))sawCommandOutput=true;const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);const bytes=Buffer.from(await response.text());await onStream({type:'start',status:200,contentType:'text/event-stream'});for(let offset=0;offset<bytes.length;offset+=512)await onStream({type:'chunk',data:bytes.subarray(offset,offset+512)});return {status:200,contentType:'text/event-stream',streamed:true};},
   });
   assert.equal(result.children.length,3);assert.equal(result.agent.sandbox.provider,'e2b');assert.equal(result.agent.selectedSkills[0].id,'method');
+  assert.ok(events.some(e=>e.type==='tool_end'&&e.tool==='read_public_page'&&!e.ok&&/403/.test(e.reason)),'Safe webpage HTTP cause must cross the real sandbox bridge');
   assert.equal(sawReference,true);assert.equal(sawImage,true,'Reference image must reach the real Pi model request');
   assert.equal(sawCommandOutput,true,'Real script output must reach the next Pi model turn');
   assert.ok(events.some(e=>e.type==='tool_end'&&e.tool==='run_command'&&e.ok));
