@@ -86,8 +86,8 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
     let exitError;
     try { await handle.wait(); } catch (error) { exitError = error; }
     await chain;
-    controller.signal.throwIfAborted();
     if (failure) throw failure;
+    controller.signal.throwIfAborted();
     if (exitError || !result) throw new AgentRunError('沙箱未提交完整结果，原导图已保留', 'AGENT_SANDBOX_FAILED');
     return { ...result, agent: { ...result.agent, sandbox: { provider: 'e2b', taskId: sandbox.sandboxId, isolated: true } } };
   } catch (error) {
