@@ -10,8 +10,9 @@ export class AgentRunError extends Error {
 export function publicToolFailure(toolName, result) {
   const text = (result?.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
   if (/output token limit|arguments may be truncated/i.test(text)) return '模型输出达到长度上限，工具参数可能不完整';
+  if (toolName === 'plan_work' && /计划步骤|steps/.test(text)) return '计划中没有可读取的行动步骤，请使用 steps 文字列表或带 title/action/description 的步骤对象';
   if (/validation|invalid arguments|expected|参数/i.test(text)) {
-    if (toolName === 'plan_work') return '计划参数格式未通过校验：steps 需包含 2–6 条文字步骤，每条最多 160 字符';
+    if (toolName === 'plan_work') return '计划中没有可读取的行动步骤，请使用 steps 文字列表或带 title/action/description 的步骤对象';
     const paths = [...text.split('Received arguments:')[0].matchAll(/-\s*((?:children|steps)(?:\[\d+\]|\.(?:title|note|sourceIds))*)\s*:/g)].map(match => match[1]);
     const fields = paths.length ? '（字段：' + [...new Set(paths)].slice(0, 4).join('、') + '）' : '';
     if (['validate_branches','submit_branches'].includes(toolName)) return '分支参数格式不正确' + fields + '：需传 children 数组，每项包含 title（1–80 字）和 note（40–1800 字）；sourceIds 可省略或传有效来源编号数组';
@@ -38,6 +39,17 @@ function recoveryKey(name, args = {}) {
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const textResult = (details, terminate = false) => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details, ...(terminate ? { terminate: true } : {}) });
+export function normalizePlan(value) {
+  const input = typeof value === 'string' ? value.split(/\r?\n/).filter(line=>line.trim()) : value;
+  if (!Array.isArray(input) || !input.length || input.length > 20) throw Error('计划 steps 需包含 1–20 项行动步骤');
+  const steps=input.map(item=>{
+    const raw=typeof item==='string'?item:item&&typeof item==='object'?[item.title,item.action,item.description,item.text,item.step].find(v=>typeof v==='string'&&v.trim()):null;
+    if (!raw?.trim()) throw Error('计划步骤缺少行动文字');
+    return raw.trim().replace(/\s+/g,' ').slice(0,240);
+  });
+  return {steps,compacted:input.some((item,index)=>typeof item!=='string'||item.trim()!==steps[index])};
+}
+const planSchema={type:'object',properties:{steps:{anyOf:[{type:'array',minItems:1,maxItems:20,items:{anyOf:[string(4000),{type:'object',properties:{title:{type:'string'},action:{type:'string'},description:{type:'string'},text:{type:'string'},step:{type:'string'}},additionalProperties:true}]}},{type:'string',minLength:1,maxLength:16000}]}},required:['steps'],additionalProperties:true};
 const branchesSchema = object({ children: { type: 'array', minItems: 3, maxItems: 5, items: object({ title: string(80), note: string(1800), sourceIds: { type: 'array', maxItems: 5, items: string(12) } }, ['title','note']) } });
 const systemPrompt = `你是嵌入思维导图产品的领域分析 Agent，由 Pi 工具循环驱动。目标是把用户选中节点展开成专业且可检查的子问题或解决方案。
 执行协议：
@@ -92,8 +104,8 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
     return { name, label, description, parameters, executionMode: 'sequential', execute: async (id, args) => { checkAbort(); return execute(args); } };
   }
   const tools = [
-    tool('plan_work', '制定执行计划', '提交2–6项简短行动纲要，不包含内部推理。', object({ steps: { type: 'array', minItems: 2, maxItems: 6, items: string(160) } }), async args => {
-      plan = args.steps; notify('plan', { steps: plan }); return textResult({ accepted: true, steps: plan });
+    tool('plan_work', '制定执行计划', '优先传 steps:["读取整图与约束","选择方法并形成分支","校验并提交"]。只写行动，不写内部推理。也兼容带 title/action/description 的步骤对象及分行文字。', planSchema, async args => {
+      const normalized = normalizePlan(args.steps); plan = normalized.steps; notify('plan', { steps: plan, compacted: normalized.compacted }); return textResult({ accepted: true, steps: plan, compacted: normalized.compacted });
     }),
     tool('read_node_context', '读取节点上下文', '读取用户选中节点、祖先备注、项目约束、已有分支及补充指令。', object({}), async () => {
       contextRead = true;
@@ -164,7 +176,7 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
   const labels = new Map(tools.map(t => [t.name, t.label]));
   const { model, models } = createPiModel(connection);
   const baseStream = injectedStream || ((m, context, options) => models.streamSimple(m, context, {
-    ...options, maxTokens: 3600, timeoutMs: 45000, maxRetries: 0, toolChoice: 'auto',
+    ...options, maxTokens: 3600, timeoutMs: 300000, maxRetries: 0, toolChoice: 'auto',
   }));
   agent = new Agent({
     initialState: { systemPrompt: systemPrompt + (projectScoped ? '\n当前为个人项目模式：Skill 仅限当前项目启用的库。先用 list_project_skills 获取目录，再依据节点任务用 read_skill 的 id 参数读取 1–4 个相关方法。必须实际读取方法后才能校验或提交；不得使用其他项目或未加入本项目的 Skill。' : '') + (executionTools.length ? '\n已在独立任务容器准备项目 Skill 文件，目录在 list_project_skills 的 directory 字段。read_skill 读取真实 SKILL.md。可用 read_task_file、write_task_file 和 run_command 执行方法要求的本地步骤；命令不能联网，依赖未安装时应明确报告，不能编造执行成功。只能使用当前容器中已有资料和工具。' : ''), model, tools, thinkingLevel: 'off' },

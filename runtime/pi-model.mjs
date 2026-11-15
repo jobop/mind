@@ -18,6 +18,12 @@ export function createPiModel(connection) {
 }
 export function safeModelError(error, key) {
   const message = String(error?.message || error || '');
+  if (/AGENT_MODEL_FIRST_BYTE_TIMEOUT/.test(message)) return '等待模型首包超过 120 秒';
+  if (/AGENT_MODEL_IDLE_TIMEOUT/.test(message)) return '模型流连续 90 秒没有新数据';
+  if (/AGENT_MODEL_TOTAL_TIMEOUT/.test(message)) return '单次模型调用超过 5 分钟总时限';
+  if (/AGENT_MODEL_STREAM_INTERRUPTED/.test(message)) return '模型流在完整结束前中断';
+  if (/402/.test(message)) return '模型账户额度不足，请检查余额';
+  if (/404/.test(message)) return '模型或接口不存在，请检查接口地址和模型名';
   if (/401|403|unauthorized|authentication|api.?key/i.test(message)) return '模型鉴权失败，请检查 API Key 与权限';
   if (/429|rate.?limit|quota|credit|balance/i.test(message)) return '模型服务限流或额度不足，请稍后重试';
   if (/tool|function.?call|stream|SSE/i.test(message)) return '模型未正确支持工具调用或流式响应，请检查模型兼容性';

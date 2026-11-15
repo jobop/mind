@@ -2,33 +2,10 @@ import { platformE2BKey } from './platform-config.mjs';
 import { Sandbox } from 'e2b';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import https from 'node:https';
-import { lookup } from 'node:dns/promises';
-import { isPublicAddress, publicUrl, readPublicPage } from './public-page.mjs';
+import { brokerModel, modelHttpError, ModelTransportError } from './model-transport.mjs';
+import { readPublicPage } from './public-page.mjs';
 import { AgentRunError } from './pi-agent.mjs';
-
-// Credentialed model traffic is brokered on the server; keys never enter the sandbox.
-export async function brokerModel(connection, raw, signal) {
-  if (typeof raw !== 'string' || Buffer.byteLength(raw) > 1024 * 1024) throw Error('模型请求超过限制');
-  const input = JSON.parse(raw);
-  if (!Array.isArray(input.messages) || !Array.isArray(input.tools)) throw Error('模型工具请求格式不正确');
-  const url = publicUrl(connection.url), addresses = await lookup(url.hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some(a => !isPublicAddress(a.address))) throw Error('模型地址必须指向公网服务');
-  const payload = JSON.stringify({ ...input, model: connection.model, stream: true, max_tokens: Math.min(Number(input.max_tokens) || 3600, 3600) });
-  const combined = AbortSignal.any([signal, AbortSignal.timeout(45000)]), address = addresses[0];
-  return new Promise((done, fail) => {
-    const request = https.request(url, { method: 'POST', signal: combined, agent: false,
-      lookup(host, options, callback) { options.all ? callback(null, [address]) : callback(null, address.address, address.family); },
-      headers: { Authorization: 'Bearer ' + connection.key, 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Content-Length': Buffer.byteLength(payload) },
-    }, response => {
-      const chunks = []; let size = 0;
-      response.on('data', chunk => { size += chunk.length; if (size > 2 * 1024 * 1024) response.destroy(Error('模型响应超过限制')); else chunks.push(chunk); });
-      response.on('error', fail);
-      response.on('end', () => done({ status: response.statusCode, contentType: response.headers['content-type'] || 'text/plain', body: response.statusCode >= 200 && response.statusCode < 300 ? Buffer.concat(chunks).toString('utf8').split(connection.key).join('[redacted]') : JSON.stringify({ error: { message: '模型服务返回 HTTP ' + response.statusCode } }) }));
-    });
-    request.on('error', fail); request.end(payload);
-  });
-}
+export { brokerModel };
 let active = 0;
 const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context']);
 export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage }) {
@@ -43,6 +20,7 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
   const timeout = setTimeout(cancel, 1080000);
   const abort = () => { if (sandbox) sandbox.kill({ requestTimeoutMs: 10000, signal: AbortSignal.timeout(10000) }).catch(() => {}); };
   controller.signal.addEventListener('abort', abort, { once: true });
+  const modelControllers = new Map(); let lastModelFailure = null;
   const send = message => handle.sendStdin(JSON.stringify(message) + '\n', { requestTimeoutMs: 60000, signal: controller.signal });
   async function processLine(line) {
     if (closed || !line.trim()) return;
@@ -52,18 +30,36 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
       try {
         if (message.operation === 'model') {
           if (++modelCalls > 20) throw Error('模型请求次数超过限制');
-          response = await modelProxy(connection, message.payload?.body, controller.signal);
+          const modelController = new AbortController(); modelControllers.set(message.id, modelController);
+          let sequence = 0, announced = false;
+          try {
+            response = await modelProxy(connection, message.payload?.body, AbortSignal.any([controller.signal,modelController.signal]), async event => {
+              if (modelController.signal.aborted) return;
+              if (event.type === 'start') await send({type:'rpc_stream_start',id:message.id,status:event.status,contentType:event.contentType});
+              if (event.type === 'chunk') {
+                if (!announced) { emit({type:'model_stream',call:modelCalls}); announced=true; }
+                await send({type:'rpc_stream_chunk',id:message.id,sequence:++sequence,data:event.data.toString('base64')});
+              }
+            });
+            if (response.status >= 400) lastModelFailure = modelHttpError(response.status); else lastModelFailure = null;
+          } finally { modelControllers.delete(message.id); }
         } else if (message.operation === 'page') {
           if (++pages > 5) throw Error('网页请求次数超过限制');
           response = await pageReader(message.payload?.url, controller.signal);
         } else throw Error('未知沙箱请求');
         await send({ type: 'rpc_result', id: message.id, result: response });
-      } catch { await send({ type: 'rpc_result', id: message.id, error: '平台代理请求未成功，可能是超时、访问限制或执行预算不足' }); }
+      } catch (error) {
+        const known = error instanceof ModelTransportError;
+        const messageText = known ? error.message : message.operation === 'model' ? '模型代理调用未完成，请检查连接和任务预算' : '公开网页读取未完成';
+        if (message.operation === 'model') { lastModelFailure = known ? error : new ModelTransportError('AGENT_MODEL_PROXY',messageText); emit({type:'model_error',code:lastModelFailure.code,reason:messageText}); }
+        await send({type:'rpc_result',id:message.id,error:messageText,code:known?error.code:'AGENT_MODEL_PROXY'});
+      }
     } else if (message.type === 'result') {
       if (Buffer.byteLength(JSON.stringify(message.result)) > 600000) throw Error('任务结果超过限制');
       result = message.result;
     } else if (message.type === 'error') {
       const known = ['AGENT_LIMIT','AGENT_INCOMPLETE','AGENT_TIMEOUT','AGENT_ERROR','AGENT_NO_SKILLS','TOOLS_REQUIRED'].includes(message.code);
+      if (lastModelFailure && ['AGENT_INCOMPLETE','AGENT_ERROR'].includes(message.code)) { failure = new AgentRunError(lastModelFailure.message,lastModelFailure.code); return; }
       failure = new AgentRunError(known && typeof message.error === 'string' ? message.error.slice(0, 240) : '沙箱 Agent 未完成任务，请检查工具记录后重试', known ? message.code : 'AGENT_SANDBOX_FAILED');
     }
     else if (allowedEvents.has(message.type) && eventCount++ < 250) emit(message);
@@ -81,7 +77,9 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
       buffer += chunk;
       if (Buffer.byteLength(buffer) > 2 * 1024 * 1024) { failure = new AgentRunError('沙箱消息超过限制', 'AGENT_SANDBOX_FAILED'); controller.abort(); return; }
       let index;
-      while ((index = buffer.indexOf('\n')) !== -1) { const line = buffer.slice(0, index); buffer = buffer.slice(index + 1); chain = chain.then(() => processLine(line)).catch(() => { failure = new AgentRunError('沙箱通信失败', 'AGENT_SANDBOX_FAILED'); controller.abort(); }); }
+      while ((index = buffer.indexOf('\n')) !== -1) { const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+        try { const message = JSON.parse(line); if (message.type === 'rpc_cancel') { modelControllers.get(message.id)?.abort({code:message.reason==='consumer_done'?'MODEL_CONSUMER_DONE':'MODEL_REQUEST_ABORTED'}); continue; } } catch {}
+        chain = chain.then(() => processLine(line)).catch(() => { failure = new AgentRunError('沙箱通信失败', 'AGENT_SANDBOX_FAILED'); controller.abort(); }); }
     } });
     await sandbox.files.write('/workspace/task/input.json', JSON.stringify({ connection: { url: connection.url, model: connection.model, key: 'brokered-no-real-key' }, job, skills }), { requestTimeoutMs: 60000, signal: controller.signal });
     await send({ type: 'start' });

@@ -390,6 +390,8 @@ function agentEventText(event) {
     started: () => 'Pi Agent 已启动（最多 ' + event.limits.modelCalls + ' 次模型调用）',
     plan: () => '执行步骤：\n' + event.steps.map((step, i) => (i + 1) + '. ' + step).join('\n'),
     finishing: () => '已进入最后 ' + event.remaining + ' 轮，正在收尾并提交分支',
+    model_stream: () => '第 ' + event.call + ' 轮模型已开始流式返回数据',
+    model_error: () => event.reason,
     model_request: () => '模型调用 ' + event.call + ' / ' + event.max,
     tool_start: () => '开始：' + event.label,
     tool_end: () => (event.ok ? '完成：' : '工具未成功：') + event.label + (!event.ok && event.reason ? '；原因：' + event.reason : ''),

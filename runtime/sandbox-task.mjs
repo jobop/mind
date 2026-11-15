@@ -4,14 +4,17 @@ import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { runPiAgent, AgentRunError } from './pi-agent.mjs';
+import { createModelStream } from './model-stream.mjs';
 import { sandboxTools } from './sandbox-tools.mjs';
 const pending = new Map(); let sequence = 0, started = false;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 function rpc(operation, payload) { const id = ++sequence; return new Promise((done, fail) => { pending.set(id, { done, fail }); send({ type: 'rpc', id, operation, payload }); }); }
+const modelStream = createModelStream({send,nextId:()=>++sequence});
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on('line', async line => {
   try {
     const message = JSON.parse(line);
+    if (modelStream.handle(message)) return;
     if (message.type === 'rpc_result') { const p = pending.get(message.id); if (p) { pending.delete(message.id); message.error ? p.fail(Error(message.error)) : p.done(message.result); } return; }
     if (message.type !== 'start' || started) return; started = true;
     const { job, connection, skills } = JSON.parse(await readFile('/workspace/task/input.json', 'utf8'));
@@ -29,8 +32,7 @@ lines.on('line', async line => {
     // Only this exact provider request is brokered. Arbitrary fetch and script network access are unavailable.
     globalThis.fetch = async (url, options) => {
       if (String(url) !== connection.url) throw Error('沙箱不允许直接联网');
-      const result = await rpc('model', { body: options.body });
-      return new Response(result.body, { status: result.status, headers: { 'Content-Type': result.contentType } });
+      return modelStream.fetchModel(options.body, options.signal);
     };
     const controller = new AbortController();
     const result = await runPiAgent({ connection, job, skills, emit: send, signal: controller.signal, executionTools: sandboxTools(controller.signal), skillLoader: async skill => readFile(resolve('/workspace/task', skill.directory, 'SKILL.md'), 'utf8'), pageReader: (url) => rpc('page', { url }) });

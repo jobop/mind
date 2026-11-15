@@ -32,12 +32,13 @@ async function task(marker) {
       console.error('E2B create diagnostic: '+error.name+' — '+message.slice(0,600));throw error;
     }},
     emit:event=>{events.push(event);if(event.type==='sandbox_created')taskIds.push(event.taskId);console.log(marker + ': ' + event.type + (event.tool ? ' '+event.tool : '') + (event.reason ? ' '+event.reason : ''));},
-    modelProxy:async(connection,raw)=>{const body=JSON.parse(raw);if(body.messages.some(m=>{if(m.role!=='tool')return false;try{return JSON.parse(m.content).output?.trim()===marker;}catch{return false;}}))sawCommandOutput=true;const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);return {status:200,contentType:'text/event-stream',body:await response.text()};},
+    modelProxy:async(connection,raw,signal,onStream)=>{const body=JSON.parse(raw);if(body.messages.some(m=>{if(m.role!=='tool')return false;try{return JSON.parse(m.content).output?.trim()===marker;}catch{return false;}}))sawCommandOutput=true;const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);const bytes=Buffer.from(await response.text());await onStream({type:'start',status:200,contentType:'text/event-stream'});for(let offset=0;offset<bytes.length;offset+=512)await onStream({type:'chunk',data:bytes.subarray(offset,offset+512)});return {status:200,contentType:'text/event-stream',streamed:true};},
   });
   assert.equal(result.children.length,3);assert.equal(result.agent.sandbox.provider,'e2b');assert.equal(result.agent.selectedSkills[0].id,'method');
   assert.equal(sawCommandOutput,true,'Real script output must reach the next Pi model turn');
   assert.ok(events.some(e=>e.type==='tool_end'&&e.tool==='run_command'&&e.ok));
   assert.ok(events.some(e=>e.type==='sandbox_destroyed'));
+  assert.ok(events.some(e=>e.type==='model_stream'));
   assert.ok(events.some(e=>e.type==='map_context'&&e.totalNodes===2));
   assert.ok(events.some(e=>e.type==='started'&&e.limits.modelCalls===20));
   return result.agent.sandbox.taskId;

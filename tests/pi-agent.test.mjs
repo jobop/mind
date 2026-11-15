@@ -95,14 +95,14 @@ test('invalid plan parameters surface a safe reason and a successful retry marks
   const saved = globalThis.fetch, events = [];
   const nodes = children.map(c => ({ ...c, sourceIds: [] }));
   const script = [
-    [{ name: 'plan_work', args: { steps: ['only-one-step'] } }, ...first.slice(1)],
+    [{ name: 'plan_work', args: { steps: [{}] } }, ...first.slice(1)],
     [first[0], { name: 'validate_branches', args: { children: nodes } }],
     [{ name: 'submit_branches', args: { children: nodes } }],
   ];
   globalThis.fetch = async () => sseMessage(script.shift());
   try {
     const result = await runPiAgent({ connection, job, skill, hub, emit: e => events.push(e) });
-    assert.match(events.find(e => e.type === 'tool_end' && !e.ok).reason, /steps.*2–6/);
+    assert.match(events.find(e => e.type === 'tool_end' && !e.ok).reason, /行动步骤/);
     assert.ok(events.some(e => e.type === 'tool_recovered' && e.tool === 'plan_work'));
     assert.equal(result.agent.toolFailures, 1); assert.equal(result.agent.recoveredFailures, 1); assert.equal(result.agent.unresolvedFailures, 0);
   } finally { globalThis.fetch = saved; }
@@ -189,4 +189,16 @@ test('schema diagnostics name only known fields and never echo candidate content
   const { publicToolFailure }=await import('../runtime/pi-agent.mjs');
   const reason=publicToolFailure('validate_branches',{content:[{type:'text',text:'Validation failed for tool "validate_branches":\n - children[0].note: Expected string\n\nReceived arguments:\n{"private":"must-not-leak"}'}]});
   assert.match(reason,/children\[0\]\.note/);assert.doesNotMatch(reason,/must-not-leak|private/);
+});
+
+test('plan compatibility accepts action objects, long items and a single step without retrying the model',async()=>{
+ const saved=globalThis.fetch;
+ try{
+  for(const steps of [[{title:'先理解整树',status:'pending'},{action:'选择领域方法',id:2},{description:'构造并校验分支'}],['行动说明'.repeat(90)],'读取全局\n选择方法\n校验并提交']){
+   const nodes=children.map(c=>({...c,sourceIds:[]})),events=[];
+   const script=[[{name:'plan_work',args:{steps}},...first.slice(1)],[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+   globalThis.fetch=async()=>sseMessage(script.shift());const result=await runPiAgent({connection,job,skill,hub,emit:e=>events.push(e)});
+   assert.equal(result.agent.modelCalls,3);assert.equal(result.agent.toolFailures,0);assert.ok(result.agent.plan.every(s=>typeof s==='string'&&s.length<=240));
+  }
+ }finally{globalThis.fetch=saved;}
 });
