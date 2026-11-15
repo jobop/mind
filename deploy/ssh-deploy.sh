@@ -36,6 +36,10 @@ else
   auth=(sshpass -e)
   ssh_options+=(-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no)
 fi
+if [[ ${DEPLOY_MODE:-deploy} == inspect ]]; then
+  "${auth[@]}" ssh "${ssh_options[@]}" -p "$port" "$user@$host" 'cat /etc/os-release; uname -m; ldd --version 2>&1 | head -1; for c in nginx docker systemctl python3 dnf yum apt-get certbot; do command -v "$c" || true; done; ss -lntp; if command -v docker >/dev/null; then docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"; fi'
+  exit 0
+fi
 cd .release
 sha256sum -c mind-release.sha256
 remote_dir=$("${auth[@]}" ssh "${ssh_options[@]}" -p "$port" "$user@$host" 'mktemp -d /tmp/mind-deploy.XXXXXXXX')

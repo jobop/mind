@@ -7,6 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      mode:
+        description: Deploy or inspect the server without changing it
+        type: choice
+        options: [deploy, inspect]
+        default: deploy
+        required: true
       architecture:
         description: Alibaba Cloud server CPU architecture
         type: choice
@@ -41,7 +47,7 @@ jobs:
       - name: Run tests
         run: npm test
       - name: Package self-contained Linux release
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mode != 'inspect'
         env:
           DEPLOY_ARCH: ${{ inputs.architecture }}
         run: npm run package:release -- --sha "$GITHUB_SHA" --arch "$DEPLOY_ARCH"
@@ -55,4 +61,5 @@ jobs:
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.ALIYUN_SSH_PRIVATE_KEY }}
           DEPLOY_SSH_PASSWORD: ${{ secrets.ALIYUN_SSH_PASSWORD }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.ALIYUN_KNOWN_HOSTS }}
+          DEPLOY_MODE: ${{ inputs.mode || 'deploy' }}
         run: bash deploy/ssh-deploy.sh
