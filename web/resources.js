@@ -11,7 +11,7 @@ function referenceFileUrl(resource) { return '/api/projects/'+projectSession.pro
 function resourceRow(resource, remove) {
   const row=document.createElement('div');row.className='resource-row';
   const info=document.createElement('div'),name=document.createElement('b'),meta=document.createElement('small');
-  name.textContent=resource.name;meta.textContent=resourceTypes[resource.type]+(resource.hasCredential?' · 已保存凭证':'')+(resource.uploaded?' · 已上传':'');info.append(name,meta);
+  name.textContent=resource.name;meta.textContent=resourceTypes[resource.type]+(resource.type==='git'?' · 工作空间统一管理凭证':'')+(resource.uploaded?' · 已上传':'');info.append(name,meta);
   if(resource.description){const note=document.createElement('p');note.textContent=resource.description.slice(0,180);info.append(note);}
   const open=document.createElement('button');open.type='button';open.className='btn';open.textContent=resource.uploaded?'预览':'打开';open.onclick=()=>previewReference(resource);row.append(info,open);
   if(remove){const button=document.createElement('button');button.type='button';button.className='btn';button.textContent='移除';button.onclick=remove;row.append(button);}return row;
@@ -37,10 +37,9 @@ function previewReference(resource) {
 $('resourcePreviewDialog').addEventListener('close',()=>{$('resourcePreview').replaceChildren();});
 function resourceTypeChanged() {
   const type=$('resourceType').value,git=type==='git',media=type==='image'||type==='video';
-  $('resourceRefField').hidden=!git;$('resourceCredentialField').hidden=!git;$('resourceFileField').hidden=!media;
+  $('resourceRefField').hidden=!git;$('resourceWorkspaceCredential').hidden=!git;$('resourceFileField').hidden=!media;
   $('resourceFile').value='';$('resourceFile').accept=type==='image'?'image/png,image/jpeg,image/webp':'video/mp4,video/webm';
-  $('resourceCredential').value='';
-  $('resourceCapability').textContent=type==='image'?'图片可上传或填写链接。模型设置启用「支持图片输入」后，Agent 可按需读取真实图片。':type==='video'?'视频可上传播放；Agent 目前仅读取这里的说明或字幕，不自动分析画面与音轨。':git?'Agent 可读取 GitHub、GitLab.com 仓库目录和文本文件，其他 Git 地址仅作为链接参考。使用 HTTPS 地址，Token 请填在专用输入框。':'Agent 可按需提取公开网页文字；不支持网页登录态。';
+  $('resourceCapability').textContent=type==='image'?'图片可上传或填写链接。模型设置启用「支持图片输入」后，Agent 可按需读取真实图片。':type==='video'?'视频可上传播放；Agent 目前仅读取这里的说明或字幕，不自动分析画面与音轨。':git?'Agent 可读取 GitHub、GitLab.com 仓库目录和文本文件，其他 Git 地址仅作为链接参考。使用 HTTPS 地址，凭证在项目工作空间统一配置，所有节点自动复用。':'Agent 可按需提取公开网页文字；不支持网页登录态。';
 }
 $('addNodeResource').onclick=()=>{
   if(nodeResourceDraft.length>=20)return toast('每个节点最多添加 20 个参考资源');
@@ -50,7 +49,7 @@ $('addNodeResource').onclick=()=>{
 $('resourceType').onchange=resourceTypeChanged;
 $('resourceFile').onchange=()=>{const file=$('resourceFile').files[0];if(file&&!$('resourceName').value)$('resourceName').value=file.name.slice(0,120);};
 $('resourceDialog').addEventListener('cancel',event=>{if(resourceSaving)event.preventDefault();});
-$('resourceDialog').addEventListener('close',()=>{$('resourceCredential').value='';$('resourceFile').value='';});
+$('resourceDialog').addEventListener('close',()=>{$('resourceFile').value='';});
 $('resourceForm').onsubmit=async event=>{
   event.preventDefault();if(resourceSaving)return;
   const projectId=projectSession.project?.id,session=resourceEditorSession;if(!projectId)return;
@@ -63,9 +62,9 @@ $('resourceForm').onsubmit=async event=>{
       const response=await fetch(base,{method:'POST',credentials:'same-origin',headers:{'Content-Type':file.type,'X-Branch-Request':'1','X-Resource-Name':encodeURIComponent(name)},body:file});
       const data=await response.json();if(!response.ok)throw Error(data.error||'上传失败');created=data;
       if(description)created=await api(base+'/'+created.id,{name,description},{method:'PATCH'});
-    }else created=await api(base,{type,name,description,url:$('resourceUrl').value.trim(),ref:type==='git'?$('resourceRef').value.trim():'',credential:type==='git'?$('resourceCredential').value:''});
+    }else created=await api(base,{type,name,description,url:$('resourceUrl').value.trim(),ref:type==='git'?$('resourceRef').value.trim():''});
     if(projectSession.project?.id!==projectId||resourceEditorSession!==session)throw Error('当前编辑的项目已改变，请重新添加');
-    nodeResourceDraft.push(created);renderResourceDraft();$('resourceCredential').value='';$('resourceDialog').close();toast('已加入待保存节点；点击节点「保存」完成关联');
+    nodeResourceDraft.push(created);renderResourceDraft();$('resourceDialog').close();toast('已加入待保存节点；点击节点「保存」完成关联');
   }catch(error){if(created)api(base+'/'+created.id,undefined,{method:'DELETE'}).catch(()=>{});$('resourceError').textContent=error.message;$('resourceError').hidden=false;}
   finally{resourceSaving=false;buttons.forEach(b=>b.disabled=false);}
 };
@@ -75,10 +74,10 @@ $('showResourceLibrary').onclick=async()=>{
     for(const r of items){const row=resourceRow(r);const add=document.createElement('button');add.type='button';add.className='btn';add.textContent=nodeResourceDraft.some(x=>x.id===r.id)?'已添加':'选用';add.disabled=nodeResourceDraft.some(x=>x.id===r.id);add.onclick=()=>{if(nodeResourceDraft.length>=20)return toast('每个节点最多 20 个资源');nodeResourceDraft.push(clone(r));renderResourceDraft();add.disabled=true;add.textContent='已添加';};row.append(add);
       const remove=document.createElement('button');remove.type='button';remove.className='btn';remove.textContent='删除';remove.onclick=async()=>{
         if(busy)return toast('请先结束当前生成');
-        if(!window.confirm('永久删除这个项目资源及其文件、凭证？所有节点将移除对此资源的关联。'))return;
+        if(!window.confirm('永久删除这个项目资源及其文件？工作空间 Git 凭证不受影响。所有节点将移除对此资源的关联。'))return;
         remove.disabled=true;try{await api('/api/projects/'+projectSession.project.id+'/resources/'+r.id,undefined,{method:'DELETE'});checkpoint();
           const prune=n=>{if(n.resources)n.resources=n.resources.filter(x=>x.id!==r.id);n.children.forEach(prune);};workspace.maps.forEach(m=>prune(m.root));
-          nodeResourceDraft=nodeResourceDraft.filter(x=>x.id!==r.id);row.remove();renderResourceDraft();commit();toast('已删除项目资源及其凭证');
+          nodeResourceDraft=nodeResourceDraft.filter(x=>x.id!==r.id);row.remove();renderResourceDraft();commit();toast('已删除项目资源，工作空间凭证保留');
         }catch(error){toast(error.message);remove.disabled=false;}
       };row.append(remove);$('nodeResourceLibrary').append(row);}
     if(!items.length)$('nodeResourceLibrary').textContent='当前项目还没有资源。';
@@ -100,3 +99,42 @@ async function restoreImportedResources(root) {
   }
   await visit(root);
 }
+
+let gitCredentialProjectId=null,gitCredentialSaving=false;
+async function refreshGitCredentials(){
+  const projectId=gitCredentialProjectId;
+  const result=await api('/api/projects/'+projectId+'/git-credentials');
+  if(gitCredentialProjectId!==projectId)return;
+  $('gitCredentialList').replaceChildren();
+  for(const item of result.items){
+    const row=document.createElement('div');row.className='resource-row';const info=document.createElement('div'),name=document.createElement('b'),hint=document.createElement('small');
+    name.textContent=item.host+' · 已配置';hint.textContent=item.legacy?'历史迁移 · '+item.scope+'（未配置平台默认凭证时使用）':'工作空间默认 · 此平台所有仓库共用';info.append(name,hint);
+    const remove=document.createElement('button');remove.type='button';remove.className='btn';remove.textContent=item.legacy?'删除':'清除此平台';
+    remove.onclick=async()=>{
+      if(busy)return toast('请先结束当前生成');
+      if(!window.confirm(item.legacy?'删除这条历史 Git 凭证？':'清除此项目在 '+item.host+' 的全部凭证？私有仓库将无法读取，其他项目不受影响。'))return;
+      remove.disabled=true;try{await api('/api/projects/'+projectId+'/git-credentials/'+item.id,undefined,{method:'DELETE'});await refreshGitCredentials();toast('已清除工作空间凭证');}catch(error){toast(error.message);remove.disabled=false;}
+    };row.append(info,remove);$('gitCredentialList').append(row);
+  }
+  if(!result.items.length)$('gitCredentialList').textContent='尚未配置；公开仓库可直接读取。';
+}
+async function openGitCredentials(){
+  if(!projectSession.project)return toast('请先选择个人项目');
+  if(busy)return toast('请先结束当前生成');
+  gitCredentialProjectId=projectSession.project.id;$('workspaceGitToken').value='';$('gitCredentialError').hidden=true;$('gitCredentialList').textContent='正在读取配置状态…';
+  $('gitCredentialProjectName').textContent='当前工作空间：'+projectSession.project.name;
+  if(!$('gitCredentialsDialog').open)$('gitCredentialsDialog').showModal();
+  try{await refreshGitCredentials();}catch(error){$('gitCredentialError').textContent=error.message;$('gitCredentialError').hidden=false;}
+}
+$('manageGitCredentials').onclick=openGitCredentials;$('resourceManageGit').onclick=openGitCredentials;
+$('gitCredentialsDialog').addEventListener('close',()=>{$('workspaceGitToken').value='';gitCredentialProjectId=null;});
+$('gitCredentialsDialog').addEventListener('cancel',event=>{if(gitCredentialSaving)event.preventDefault();});
+$('workspaceGitHost').onchange=()=>{$('workspaceGitToken').value='';};
+$('gitCredentialsForm').onsubmit=async event=>{
+  event.preventDefault();if(gitCredentialSaving||busy)return;
+  const projectId=gitCredentialProjectId;if(!projectId||projectSession.project?.id!==projectId)return toast('工作空间已改变，请重新打开设置');
+  gitCredentialSaving=true;$('gitCredentialError').hidden=true;const buttons=[...$('gitCredentialsDialog').querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+  try{await api('/api/projects/'+projectId+'/git-credentials',{host:$('workspaceGitHost').value,token:$('workspaceGitToken').value},{method:'PUT'});$('workspaceGitToken').value='';await refreshGitCredentials();toast('已保存工作空间 Git 凭证，所有节点自动复用');}
+  catch(error){$('gitCredentialError').textContent=error.message;$('gitCredentialError').hidden=false;}
+  finally{gitCredentialSaving=false;buttons.forEach(b=>b.disabled=false);}
+};

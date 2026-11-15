@@ -698,7 +698,7 @@ function download(data, filename, type) {
 }
 $('exportBtn').onclick = () => {
   download(JSON.stringify({ format: 'branch-ai', version: 1, projectSkills: projectSession.project?.skills || [], projectBrief: projectSession.project?.brief || '', map: map() }, null, 2), map().title.replace(/[\\/:*?"<>|]/g, '_') + '.json', 'application/json');
-  toast('已导出当前导图，备份不含任何密钥或附件文件内容；跨项目导入后需重新添加文件和私有仓库凭证');
+  toast('已导出当前导图，备份不含任何密钥或附件文件内容；跨项目导入后需重新添加文件，并在工作空间配置 Git 凭证');
 };
 $('importBtn').onclick = () => $('importFile').click();
 $('mobileImport').onclick = () => $('importFile').click();
@@ -725,7 +725,7 @@ $('importFile').onchange = async e => {
     if (typeof restoreImportedResources === 'function' && count(imported.root) && (function hasResources(n){return n.resources?.length || n.children.some(hasResources);})(imported.root)) await restoreImportedResources(imported.root);
     if (projectSession.project && typeof importProjectSkills === 'function') importProjectSkills(data.projectSkills, item.skill);
     checkpoint(); workspace.maps.unshift(imported); workspace.active = imported.id; selected = imported.root.id; failedRequest = null;
-    commit(); fit(); toast('导图已导入；跨项目附件需重新上传，私有仓库需重新添加凭证');
+    commit(); fit(); toast('导图已导入；跨项目附件需重新上传，私有仓库需在工作空间配置凭证');
   } catch (error) { toast(error instanceof SyntaxError ? 'JSON 文件无法读取，请检查文件内容' : error.message); }
   e.target.value = '';
 };

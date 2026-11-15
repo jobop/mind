@@ -94,9 +94,9 @@ $('logoutAccount').onclick = async () => {
 function resetPersonalSession() {
   clearTimeout(projectSaveTimer); projectSession.user = null; projectSession.project = null; projectSession.projects = []; projectSession.dirty = false; projectSaveError = null;
   const m = newMap(); workspace = { maps: [m], active: m.id }; selected = m.root.id; history = []; future = []; connection = { configured: false }; agentTraceMapId = null;
-  for (const id of ['apiKey','skillName','skillContent','projectBrief','hubPreview']) $(id).value = '';
+  for (const id of ['apiKey','workspaceGitToken','skillName','skillContent','projectBrief','hubPreview']) $(id).value = '';
   renderProjects(); render(); fit(); $('saveStatus').textContent = '未登录 · 本地草稿';
-  for (const id of ['projectSkillsDialog','skillDialog','skillHubDialog','settingsDialog']) if ($(id).open) $(id).close();
+  for (const id of ['gitCredentialsDialog','resourceDialog','editDialog','projectSkillsDialog','skillDialog','skillHubDialog','settingsDialog']) if ($(id).open) $(id).close();
 }
 function openNewProject() {
   if (busy) return toast('请先等待或取消当前生成');
