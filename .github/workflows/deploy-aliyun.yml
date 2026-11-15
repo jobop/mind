@@ -23,9 +23,9 @@ concurrency:
 
 jobs:
   verify:
-    name: Test and package
+    name: Test, package and deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -45,33 +45,8 @@ jobs:
         env:
           DEPLOY_ARCH: ${{ inputs.architecture }}
         run: npm run package:release -- --sha "$GITHUB_SHA" --arch "$DEPLOY_ARCH"
-      - name: Upload verified release
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
-        with:
-          name: mind-release-${{ github.sha }}
-          path: |
-            .release/mind-release.tar.gz
-            .release/mind-release.sha256
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 7
-
-  deploy:
-    name: Deploy mind.made-world.link
-    needs: verify
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Check out deployment scripts
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Download verified release
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
-        with:
-          name: mind-release-${{ github.sha }}
-          path: artifact
       - name: Deploy through SSH and verify HTTPS
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:
           DEPLOY_HOST: ${{ vars.ALIYUN_HOST || '47.90.84.89' }}
           DEPLOY_USER: ${{ vars.ALIYUN_USER || 'root' }}

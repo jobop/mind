@@ -26,7 +26,7 @@
 
 进入 **Actions → CI and deploy to Alibaba Cloud → Run workflow**，选择 `main` 和服务器架构（通常为 `x64`；ARM 机器选择 `arm64`）。
 
-推送 main 或创建 PR 只执行测试；**手动 Run workflow 才部署**。非 main 分支不会获得部署步骤。工作流先安装锁定依赖、构建、执行测试，再打包 Node.js、Pi SDK 及全部运行依赖，上传校验过的发布包，然后使用 SSH 部署。服务器不需要自行访问 npm 或 GitHub 下载应用依赖。
+推送 main 或创建 PR 只执行测试；**手动 Run workflow 才部署**。非 main 分支不会获得部署步骤。工作流在同一个 Runner 中安装锁定依赖、构建和执行测试，再打包 Node.js、Pi SDK 及全部运行依赖，经 SCP 直接传包并使用 SSH 部署，不占用 GitHub Artifacts 存储。服务器不需要自行访问 npm 或 GitHub 下载应用依赖。
 
 首次部署会安装必要的 Nginx、Certbot 等系统包，创建专用服务账户 `mind-app`，配置 systemd，并通过 Let's Encrypt 申请 HTTPS 证书与自动续期。域名 DNS 和公网 80/443 可达是证书签发的前提。若目标域名已有另一份 Nginx 配置或已有非本项目的 mind.service，部署会停止，保留原配置供人工合并。
 

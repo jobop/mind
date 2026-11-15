@@ -36,7 +36,7 @@ else
   auth=(sshpass -e)
   ssh_options+=(-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no)
 fi
-cd artifact
+cd .release
 sha256sum -c mind-release.sha256
 remote_dir=$("${auth[@]}" ssh "${ssh_options[@]}" -p "$port" "$user@$host" 'mktemp -d /tmp/mind-deploy.XXXXXXXX')
 [[ $remote_dir =~ ^/tmp/mind-deploy\.[A-Za-z0-9]{8}$ ]] || { echo 'Invalid remote temporary directory'; exit 1; }
