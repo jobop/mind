@@ -6,7 +6,7 @@ export function createPiModel(connection) {
   const baseUrl = connection.url.replace(/\/chat\/completions$/, '');
   const model = {
     id: connection.model, name: connection.model, api: 'openai-completions', provider: 'branch-custom', baseUrl,
-    reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: false, input: connection.visionEnabled ? ['text','image'] : ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000, maxTokens: maxOutputTokens(connection),
     compat: { supportsDeveloperRole: false, supportsStore: false, supportsReasoningEffort: false, supportsUsageInStreaming: false, maxTokensField: 'max_tokens' },
   };

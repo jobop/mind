@@ -15,9 +15,18 @@ function validTree(n, seen = new Set(), depth = 0) {
   if (depth > 20 || !n || typeof n.id !== 'string' || !n.id || seen.has(n.id) ||
       typeof n.title !== 'string' || !n.title.trim() || n.title.length > 80 ||
       !Array.isArray(n.children) || n.children.length > 200 ||
-      n.note != null && (typeof n.note !== 'string' || n.note.length > 3000)) return false;
+      n.note != null && (typeof n.note !== 'string' || n.note.length > 3000) || !validResources(n.resources)) return false;
   seen.add(n.id);
   return seen.size <= 2000 && n.children.every(c => validTree(c, seen, depth + 1));
+}
+function validResources(resources) {
+  if (resources == null) return true;
+  if (!Array.isArray(resources) || resources.length > 20) return false;
+  return resources.every(r => {
+    if (!r || !['git','image','video','web'].includes(r.type) || typeof r.id !== 'string' || r.id.length > 80 || typeof r.name !== 'string' || !r.name.trim() || r.name.length > 120 || typeof r.description !== 'string' || r.description.length > 12000 || Object.keys(r).some(k => !['id','type','name','url','description','ref','uploaded','mime','bytes','hasCredential'].includes(k))) return false;
+    if (!r.url) return r.uploaded === true;
+    try { const u=new URL(r.url); return u.protocol==='https:' && !u.username && !u.password && (r.type!=='git'||!u.search); } catch { return false; }
+  });
 }
 function validSkill(skill) {
   if (skill == null) return true;
@@ -200,6 +209,7 @@ function draw() {
 }
 function renderInspector() {
   const result = find(selected), n = result.node;
+  if (typeof renderNodeResourceSummary === 'function') renderNodeResourceSummary(n);
   $('selectedTitle').textContent = n.title;
   $('selectedKind').textContent = result.parent ? '当前节点' : '中心主题';
   $('selectedPath').textContent = n.note || (result.parent ? '来自 · ' + result.parent.title : '编辑主题，或直接用 AI 展开想法');
@@ -340,6 +350,7 @@ function openEdit(action, id = selected) {
   $('editTitle').value = action === 'edit' ? n.title : action === 'rename' ? map().title : '';
   $('editNote').value = action === 'edit' ? n.note || '' : '';
   $('editNote').closest('label').hidden = action === 'rename';
+  if (typeof prepareNodeResources === 'function') prepareNodeResources(action === 'edit' ? n.resources || [] : [], action !== 'rename');
   $('editDialog').showModal(); setTimeout(() => $('editTitle').focus(), 50);
 }
 $('editForm').onsubmit = event => {
@@ -353,7 +364,8 @@ $('editForm').onsubmit = event => {
   else if (editAction === 'child') {
     const parent = find(editTarget).node, child = { id: uid(), title, note, children: [] };
     parent.children.push(child); parent.collapsed = false; selected = child.id;
-  } else { const n = find(editTarget).node; if (n === map().root && map().title === n.title) map().title = title; n.title = title; n.note = note; }
+  } else { const n = find(editTarget).node; if (n === map().root && map().title === n.title) map().title = title; n.title = title; n.note = note; selected = n.id; }
+  if (editAction !== 'rename' && typeof nodeResourceDraft !== 'undefined') find(selected).node.resources = clone(nodeResourceDraft);
   $('editDialog').close(); failedRequest = null; commit(); fit();
 };
 $('newMap').onclick = () => openEdit('new'); $('mobileNewMap').onclick = () => openEdit('new');
@@ -621,6 +633,7 @@ function openSettings() {
   if ($('settingsDialog').open) return;
   $('apiBase').value = connection.base || '';
   $('modelName').value = connection.model || '';
+  $('modelVisionEnabled').checked = connection.visionEnabled === true;
   $('modelMaxOutputTokens').value = connection.maxOutputTokens || 8192;
   $('apiKey').value = '';
   $('apiKey').placeholder = connection.configured ? '已安全保存；保持地址不变可留空沿用' : '请输入你的 API Key';
@@ -641,13 +654,13 @@ $('providerPreset').onchange = e => {
   $('apiKey').value = '';
 };
 function connectionControls(disabled) {
-  for (const id of ['connectModel', 'disconnectModel', 'apiBase', 'modelName', 'apiKey', 'providerPreset', 'modelMaxOutputTokens']) $(id).disabled = disabled;
+  for (const id of ['connectModel', 'disconnectModel', 'apiBase', 'modelName', 'apiKey', 'providerPreset', 'modelMaxOutputTokens', 'modelVisionEnabled']) $(id).disabled = disabled;
   $('connectModel').textContent = disabled ? '正在验证真实连接…' : '连接并验证';
 }
 $('settingsForm').onsubmit = async e => {
   e.preventDefault(); if (connecting) return;
   if (busy) return toast('请先等待或取消当前生成，再修改模型连接');
-  const input = { base: $('apiBase').value.trim(), model: $('modelName').value.trim(), maxOutputTokens: Number($('modelMaxOutputTokens').value) || 8192, key: $('apiKey').value.trim() };
+  const input = { visionEnabled: $('modelVisionEnabled').checked, base: $('apiBase').value.trim(), model: $('modelName').value.trim(), maxOutputTokens: Number($('modelMaxOutputTokens').value) || 8192, key: $('apiKey').value.trim() };
   if (!input.base || !input.model || !input.key && (!connection.configured || connection.base !== input.base.replace(/\/$/, '').replace(/\/chat\/completions$/, ''))) {
     $('connectionError').textContent = '请填写接口地址、模型名称和 API Key'; $('connectionError').hidden = false; return;
   }
@@ -685,7 +698,7 @@ function download(data, filename, type) {
 }
 $('exportBtn').onclick = () => {
   download(JSON.stringify({ format: 'branch-ai', version: 1, projectSkills: projectSession.project?.skills || [], projectBrief: projectSession.project?.brief || '', map: map() }, null, 2), map().title.replace(/[\\/:*?"<>|]/g, '_') + '.json', 'application/json');
-  toast('已导出当前导图，备份中不包含模型密钥');
+  toast('已导出当前导图，备份不含任何密钥或附件文件内容；跨项目导入后需重新添加文件和私有仓库凭证');
 };
 $('importBtn').onclick = () => $('importFile').click();
 $('mobileImport').onclick = () => $('importFile').click();
@@ -699,7 +712,7 @@ $('importFile').onchange = async e => {
     const data = JSON.parse(await file.text()), item = data.map;
     if (data.format !== 'branch-ai' || data.version !== 1 || !item || typeof item.title !== 'string' || !item.title.trim() || item.title.length > 80 || !validTree(item.root) || !validMapSettings(item)) throw Error('文件格式不正确，请选择枝想导出的 JSON 导图');
     function sanitize(n) {
-      const node = { id: uid(), title: n.title.trim(), note: n.note || '', collapsed: n.collapsed === true, children: n.children.map(sanitize) };
+      const node = { id: uid(), title: n.title.trim(), note: n.note || '', resources: (n.resources || []).map(r=>({...r,hasCredential:false})), collapsed: n.collapsed === true, children: n.children.map(sanitize) };
       if (n.generated && typeof n.generated.model === 'string' && n.generated.model.length <= 150 && typeof n.generated.at === 'string' && Number.isFinite(Date.parse(n.generated.at))) {
         node.generated = { model: n.generated.model, at: n.generated.at, direction: n.generated.direction === 'solutions' ? 'solutions' : 'questions' };
         if (n.generated.agent?.framework === 'pi-agent-core') node.generated.agent = { framework: 'pi-agent-core', version: String(n.generated.agent.version || '').slice(0, 30), runId: String(n.generated.agent.runId || '').slice(0, 80), modelCalls: Number(n.generated.agent.modelCalls) || 0, toolCalls: Number(n.generated.agent.toolCalls) || 0 };
@@ -709,9 +722,10 @@ $('importFile').onchange = async e => {
       return node;
     }
     const imported = { id: uid(), title: item.title.trim(), updated: Date.now(), root: sanitize(item.root), brief: item.brief || '', skill: item.skill?.id === 'custom' ? { id: 'custom', name: item.skill.name, content: item.skill.content, origin: normalizeSkillOrigin(item.skill.origin) } : { id: item.skill?.id || 'general' } };
+    if (typeof restoreImportedResources === 'function' && count(imported.root) && (function hasResources(n){return n.resources?.length || n.children.some(hasResources);})(imported.root)) await restoreImportedResources(imported.root);
     if (projectSession.project && typeof importProjectSkills === 'function') importProjectSkills(data.projectSkills, item.skill);
     checkpoint(); workspace.maps.unshift(imported); workspace.active = imported.id; selected = imported.root.id; failedRequest = null;
-    commit(); fit(); toast('导图已导入');
+    commit(); fit(); toast('导图已导入；跨项目附件需重新上传，私有仓库需重新添加凭证');
   } catch (error) { toast(error instanceof SyntaxError ? 'JSON 文件无法读取，请检查文件内容' : error.message); }
   e.target.value = '';
 };

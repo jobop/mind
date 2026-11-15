@@ -1,3 +1,4 @@
+import { validateNodeResources } from './resources.mjs';
 import { buildMapContext } from './map-context.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, randomBytes, createHash, scrypt as derive, timingSafeEqual } from 'node:crypto';
@@ -37,6 +38,7 @@ export function validateProject(input) {
       if (!n || depth > 20 || !Array.isArray(n.children) || n.children.length > 200) fail('节点结构或层级不正确');
       text(n.id, 80, '节点 ID'); text(n.title, 80, '节点名称'); text(n.note ?? '', 3000, '节点备注', true);
       if (seen.has(n.id) || seen.size >= 2000) fail('节点 ID 重复或超过 2000 个节点'); seen.add(n.id);
+      if(n.resources !== undefined) n.resources = validateNodeResources(n.resources);
       n.children.forEach(c => node(c, depth + 1));
     }
     node(map.root);

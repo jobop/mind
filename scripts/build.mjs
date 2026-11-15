@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 const assets = {};
 for (const [path, file, type] of [
   ['/', 'index.html', 'text/html; charset=utf-8'],
+  ['/resources.js', 'resources.js', 'text/javascript; charset=utf-8'],
   ['/app.js', 'app.js', 'text/javascript; charset=utf-8'],
   ['/style.css', 'style.css', 'text/css; charset=utf-8'],
   ['/skills.js', 'skills.js', 'text/javascript; charset=utf-8'],

@@ -8,13 +8,13 @@ import { AgentRunError } from './pi-agent.mjs';
 export { brokerModel };
 let active = 0;
 const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context']);
-export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage }) {
+export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage, referenceReader }) {
   apiKey = platformE2BKey(apiKey);
   if (!apiKey) throw new AgentRunError('平台尚未配置 E2B 沙箱，请联系维护者配置 E2B_API_KEY', 'AGENT_SANDBOX_NOT_CONFIGURED');
   if (active >= 3) throw new AgentRunError('平台沙箱繁忙，请稍后重试', 'AGENT_SANDBOX_BUSY');
   if (!Array.isArray(skills) || !skills.length) throw new AgentRunError('项目尚未准备 Skill 文件', 'AGENT_NO_SKILLS');
   signal?.throwIfAborted(); active++;
-  let sandbox, handle, closed = false, result, failure, buffer = '', chain = Promise.resolve(), modelCalls = 0, pages = 0, eventCount = 0;
+  let sandbox, handle, closed = false, result, failure, buffer = '', chain = Promise.resolve(), modelCalls = 0, pages = 0, referenceReads = 0, eventCount = 0;
   const controller = new AbortController(), cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
   const timeout = setTimeout(cancel, 1080000);
@@ -46,11 +46,16 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
         } else if (message.operation === 'page') {
           if (++pages > 5) throw Error('网页请求次数超过限制');
           response = await pageReader(message.payload?.url, controller.signal);
+        } else if (message.operation === 'reference') {
+          if (++referenceReads > 8) throw Error('参考资源读取次数超过限制');
+          const id=message.payload?.id;
+          if(!referenceReader || !job.mapContext?.nodes.some(n=>n.resources?.some(r=>r.id===id))) throw Error('资源未加入本次导图');
+          response=await referenceReader(id,{path:typeof message.payload.path==='string'?message.payload.path:'',directory:message.payload.directory===true,signal:controller.signal});
         } else throw Error('未知沙箱请求');
         await send({ type: 'rpc_result', id: message.id, result: response });
       } catch (error) {
         const known = error instanceof ModelTransportError;
-        const messageText = known ? error.message : message.operation === 'model' ? '模型代理调用未完成，请检查连接和任务预算' : '公开网页读取未完成';
+        const messageText = known ? error.message : message.operation === 'model' ? '模型代理调用未完成，请检查连接和任务预算' : message.operation === 'reference' ? '参考资源读取失败，请检查链接、仓库分支、凭证或文件是否仍在项目中' : '公开网页读取未完成';
         if (message.operation === 'model') { lastModelFailure = known ? error : new ModelTransportError('AGENT_MODEL_PROXY',messageText); emit({type:'model_error',code:lastModelFailure.code,reason:messageText}); }
         await send({type:'rpc_result',id:message.id,error:messageText,code:known?error.code:'AGENT_MODEL_PROXY'});
       }
@@ -83,7 +88,7 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
         chain = chain.then(() => processLine(line)).catch(() => { failure = new AgentRunError('沙箱通信失败', 'AGENT_SANDBOX_FAILED'); controller.abort(); }); }
       if (Buffer.byteLength(buffer) > 24 * 1024 * 1024) { failure = new AgentRunError('单条沙箱消息超过平台限制（24 MiB）', 'AGENT_SANDBOX_FAILED'); controller.abort(); }
     } });
-    await sandbox.files.write('/workspace/task/input.json', JSON.stringify({ connection: { url: connection.url, model: connection.model, key: 'brokered-no-real-key', maxOutputTokens: connection.maxOutputTokens }, job, skills }), { requestTimeoutMs: 60000, signal: controller.signal });
+    await sandbox.files.write('/workspace/task/input.json', JSON.stringify({ connection: { url: connection.url, model: connection.model, key: 'brokered-no-real-key', maxOutputTokens: connection.maxOutputTokens, visionEnabled: connection.visionEnabled===true }, job, skills }), { requestTimeoutMs: 60000, signal: controller.signal });
     await send({ type: 'start' });
     let exitError;
     try { await handle.wait(); } catch (error) { exitError = error; }

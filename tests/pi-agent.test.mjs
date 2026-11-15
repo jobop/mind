@@ -202,3 +202,18 @@ test('plan compatibility accepts action objects, long items and a single step wi
   }
  }finally{globalThis.fetch=saved;}
 });
+
+
+test('node references are read through an ID-scoped tool and real images reach the next model request', async () => {
+  const saved=globalThis.fetch,requests=[],reads=[];
+  const reference={id:'image-one',type:'image',name:'场景参考',url:'https://images.example.org/scene.png',description:''};
+  const scopedJob={...job,mapContext:{target:{id:'node',index:1,resources:[reference]},nodes:[{id:'node',resources:[reference]}],overview:{outline:[{id:'node'}],references:[reference]}}};
+  const script=[first,[{name:'read_reference',args:{id:'foreign-resource'}},{name:'read_reference',args:{id:reference.id}}],[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+  globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+  try {
+    const result=await runPiAgent({connection:{...connection,visionEnabled:true},job:scopedJob,skill,hub,referenceReader:async id=>{reads.push(id);return {title:reference.name,url:reference.url,description:'',image:{data:'aW1hZ2U=',mimeType:'image/png'}};}});
+    assert.deepEqual(reads,['image-one']);assert.equal(result.agent.sources[0].id,'S1');
+    assert.ok(JSON.stringify(requests[2].messages).includes('data:image/png;base64,aW1hZ2U='),'Pi converts tool image into a real image input for the provider');
+    assert.ok(requests[2].messages.some(m=>m.role==='tool'&&m.content.includes('资源未加入')));
+  }finally{globalThis.fetch=saved;}
+});

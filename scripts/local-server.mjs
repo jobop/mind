@@ -1,3 +1,4 @@
+import { ResourceService } from '../runtime/resources.mjs';
 import { platformE2BKey } from '../runtime/platform-config.mjs';
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -29,6 +30,7 @@ export async function localEnvironment() {
   let release = process.env.RELEASE_SHA || '';
   if (!release) { try { release = (await readFile(new URL('../RELEASE', import.meta.url), 'utf8')).trim(); } catch {} }
   const projects = new ProjectService(fileURLToPath(new URL('projects.sqlite', dataDir)));
+  const resources = new ResourceService(projects, secret);
   const e2bKey = platformE2BKey(process.env.E2B_API_KEY);
   const sandboxConfigured = e2bKey.startsWith('e2b_');
   const agentRunner = async args => {
@@ -36,9 +38,9 @@ export async function localEnvironment() {
     const preparation = AbortSignal.any([args.signal, AbortSignal.timeout(90000)]);
     const prepared = await prepareSkillSnapshot({ skills: args.skills, projectId: args.job.project.id, cacheDirectory: fileURLToPath(new URL('skill-cache/', dataDir)), signal: preparation, emit: args.emit,
       loadBundle: source => skillHubBundle(source, { SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '' }, new Request('https://mind.internal/api/skillhub/bundle', { signal: preparation })) });
-    return runE2BAgent({ apiKey: e2bKey, template: process.env.E2B_TEMPLATE_ID || '', runtimeArchive: fileURLToPath(new URL('../sandbox-runtime.tar.gz', import.meta.url)), ...args, skills: prepared });
+    return runE2BAgent({ apiKey: e2bKey, template: process.env.E2B_TEMPLATE_ID || '', runtimeArchive: fileURLToPath(new URL('../sandbox-runtime.tar.gz', import.meta.url)), ...args, skills: prepared, referenceReader: (id, options) => resources.read(args.job.project.id,id,{...options,visionEnabled:args.connection.visionEnabled===true}) });
   };
-  return { GENERATION_JOBS: new GenerationJobs(projects), SANDBOX_CONFIGURED: sandboxConfigured, PROJECT_SERVICE: projects, PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN || '', RELEASE_SHA: release, CONNECTION_ENCRYPTION_KEY: secret, SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '', AGENT_RUNNER: agentRunner, AGENT_TEST: testPiConnection };
+  return { RESOURCE_SERVICE: resources, GENERATION_JOBS: new GenerationJobs(projects), SANDBOX_CONFIGURED: sandboxConfigured, PROJECT_SERVICE: projects, PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN || '', RELEASE_SHA: release, CONNECTION_ENCRYPTION_KEY: secret, SKILLHUB_API_KEY: process.env.SKILLHUB_API_KEY || '', AGENT_RUNNER: agentRunner, AGENT_TEST: testPiConnection };
 }
 export function createLocalServer(env) {
   let publicOrigin = null;
