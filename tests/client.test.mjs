@@ -28,7 +28,8 @@ class Element {
 function app(initial) {
   const elements = new Map(), store = new Map(initial ? [['branch-ai-workspace-v1', JSON.stringify(initial)]] : []);
   const storage = { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) };
-  const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); }, createElement: () => new Element(), createElementNS: () => new Element(), querySelectorAll: () => [], querySelector: () => null, addEventListener() {} };
+  const documentListeners={};
+  const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); }, createElement: () => new Element(), createElementNS: () => new Element(), querySelectorAll: () => [], querySelector: () => null, addEventListener(type,fn){(documentListeners[type] ||= []).push(fn);}, dispatchEvent(event){for(const fn of documentListeners[event.type]||[])fn(event);} };
   const listeners={};
   const context = vm.createContext({ document, window: { innerWidth: 1280, innerHeight: 800, addEventListener(type,fn) {(listeners[type] ||= []).push(fn);}, dispatchEvent(event){for(const fn of listeners[event.type]||[])fn(event);} }, crypto: webcrypto, localStorage: storage, sessionStorage: storage, ResizeObserver: class { observe() {} }, requestAnimationFrame: fn => fn(), setTimeout: () => 0, clearTimeout() {}, URL, Blob, TextDecoder, AbortController, console, fetch: async () => Response.json({ configured: false }) });
   vm.runInContext(skillsSource, context);
@@ -290,4 +291,13 @@ test('non-JSON gateway errors preserve HTTP status and are retryable without exp
  await assert.rejects(run("api('/api/generate')"),error=>error.status===502&&error.isTransportError===true&&!error.message.includes('private'));
  run("fetch=async()=>({ok:false,status:401,json:async()=>{throw Error('private login html')}})");
  await assert.rejects(run("api('/api/config')"),error=>error.status===401&&error.isTransportError===false&&error.message.includes('登录'));
+});
+
+
+test('releasing a long press cannot click through to a menu action, while the next deliberate tap works',()=>{
+ const {run}=app();
+ run(`let prevented=0;suppressLongPressClick=true;document.dispatchEvent({type:'click',detail:1,preventDefault(){prevented++;},stopImmediatePropagation(){}});`);
+ assert.equal(run('prevented'),1);
+ run(`suppressLongPressClick=true;document.dispatchEvent({type:'pointerdown',target:{}});document.dispatchEvent({type:'click',detail:1,preventDefault(){prevented++;},stopImmediatePropagation(){}});`);
+ assert.equal(run('prevented'),1);assert.equal(run('suppressLongPressClick'),false);
 });

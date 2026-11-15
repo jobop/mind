@@ -277,7 +277,7 @@ function scale(factor) {
   const x = $('canvas').clientWidth / 2, y = $('canvas').clientHeight / 2, next = Math.max(.08, Math.min(2, zoom * factor));
   pan = { x: x - (x - pan.x) * next / zoom, y: y - (y - pan.y) * next / zoom }; zoom = next; transform();
 }
-let drag = null, pinch = null, gestureRevision = 0, suppressCanvasClickUntil = 0;
+let drag = null, pinch = null, gestureRevision = 0, suppressCanvasClickUntil = 0, suppressLongPressClick = false;
 const canvasPointers = new Map();
 function pinchPoints() {
   const [a, b] = [...canvasPointers.values()], rect = $('canvas').getBoundingClientRect();
@@ -879,7 +879,7 @@ function installNodeMenu(button, id) {
     start = { x: e.clientX, y: e.clientY, revision: gestureRevision }; clearTimeout(timer);
     timer = setTimeout(() => {
       if (start.revision !== gestureRevision || pinch || Date.now() < suppressCanvasClickUntil) return;
-      longPressedNode = id; longPressedAt = Date.now();
+      suppressLongPressClick = true;longPressedNode = id; longPressedAt = Date.now();
       openContextMenu({ clientX: start.x, clientY: start.y, currentTarget: button, preventDefault() {}, stopPropagation() {} }, id);
     }, 550);
   });
@@ -930,7 +930,7 @@ function openContextMenu(event, nodeId = null) {
   draw();
 }
 $('canvas').oncontextmenu = e => { if (!e.target.closest('.node') && view === 'map') openContextMenu(e); };
-document.addEventListener('pointerdown', e => { if (!$('contextMenu').hidden && !$('contextMenu').contains(e.target)) closeContextMenu(); });
+document.addEventListener('pointerdown', e => { suppressLongPressClick=false;if (!$('contextMenu').hidden && !$('contextMenu').contains(e.target)) closeContextMenu(); });
 document.addEventListener('keydown', e => {
   const menu = $('contextMenu'); if (menu.hidden) return;
   if (e.key === 'Escape' || e.key === 'Tab') { closeContextMenu(true); return; }
@@ -947,3 +947,11 @@ window.addEventListener('resize', () => closeContextMenu());
 render(); requestAnimationFrame(fit);
 if (storageOK) save(); else { $('saveStatus').textContent = '未保存，请导出备份'; toast('本地数据无法读取，已暂缓自动覆盖；请先导出备份或检查浏览器存储权限'); }
 refreshConnection();
+
+// A long press can redraw its original button; suppress only its retargeted release click.
+// A new pointerdown allows the next intentional menu tap immediately.
+document.addEventListener('click', event => {
+  if(!suppressLongPressClick)return;
+  suppressLongPressClick=false;
+  if(event.detail!==0){event.preventDefault();event.stopImmediatePropagation();}
+},true);
