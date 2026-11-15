@@ -11,6 +11,9 @@ class Element {
   append(...items) { this.children.push(...items); }
   replaceChildren() { this.children = []; }
   setAttribute() {}
+  setPointerCapture() {}
+  hasPointerCapture() { return false; }
+  releasePointerCapture() {}
   addEventListener() {}
   closest() { return new Element(); }
   showModal() { this.open = true; }
@@ -224,4 +227,43 @@ test('a new failed expansion cannot be replaced by the selected node previous su
  run('selected=map().root.id;render();selected="created-child";render()');
  assert.equal(run("$('agentRunStatus').textContent"),'本次未完成');
  assert.equal(run("$('agentTrace').children.some(item=>item.textContent==='旧任务成功')"),false);
+});
+
+
+test('two touch pointers zoom around their moving midpoint and continue as a single drag', () => {
+  const { run } = app();
+  run(`zoom=1;pan={x:10,y:20};
+    function touch(id,x,y,node=false){return {pointerId:id,pointerType:'touch',clientX:x,clientY:y,target:{closest:()=>node?{}:null},preventDefault(){}};}
+    $('canvas').onpointerdown(touch(1,120,220,true));
+    $('canvas').onpointerdown(touch(2,220,220,true));
+    $('canvas').onpointermove(touch(1,70,220));
+    $('canvas').onpointermove(touch(2,270,220));`);
+  assert.equal(run('zoom'), 2);
+  assert.equal(run('pan.x'), -130);
+  assert.equal(run('pan.y'), -160);
+  run(`$('canvas').onpointermove(touch(1,80,230));$('canvas').onpointermove(touch(2,280,230));`);
+  assert.equal(run('pan.x'), -120);
+  assert.equal(run('pan.y'), -150);
+  run(`$('canvas').onpointerup(touch(2,280,230));$('canvas').onpointermove(touch(1,100,245));`);
+  assert.equal(run('pan.x'), -100);
+  assert.equal(run('pan.y'), -135);
+  run(`$('canvas').onpointerup(touch(1,100,245));`);
+  assert.equal(run('canvasPointers.size'), 0);
+  assert.equal(run('pinch'), null);
+  assert.equal(run('drag'), null);
+});
+
+test('pinch clamps zoom and resets on cancellation, view change and lost capture', () => {
+  const { run } = app();
+  run(`function touch(id,x,y){return {pointerId:id,pointerType:'touch',clientX:x,clientY:y,target:{closest:()=>null},preventDefault(){}};}
+    zoom=1;pan={x:0,y:0};$('canvas').onpointerdown(touch(1,20,20));$('canvas').onpointerdown(touch(2,220,20));
+    $('canvas').onpointermove(touch(2,21,20));`);
+  assert.equal(run('zoom'), .08);
+  run(`$('canvas').onpointercancel(touch(1,20,20));$('canvas').onpointercancel(touch(2,21,20));`);
+  assert.equal(run('canvasPointers.size'), 0);
+  run(`$('canvas').onpointerdown(touch(3,20,20));switchView('outline');$('canvas').onpointerdown(touch(4,30,20));`);
+  assert.equal(run('canvasPointers.size'), 0);
+  run(`switchView('map');$('canvas').onpointerdown(touch(5,20,20));$('canvas').onlostpointercapture({pointerId:5,target:$('canvas')});`);
+  assert.equal(run('canvasPointers.size'), 0);
+  assert.equal(run('drag'), null);
 });

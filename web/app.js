@@ -267,15 +267,65 @@ function scale(factor) {
   const x = $('canvas').clientWidth / 2, y = $('canvas').clientHeight / 2, next = Math.max(.08, Math.min(2, zoom * factor));
   pan = { x: x - (x - pan.x) * next / zoom, y: y - (y - pan.y) * next / zoom }; zoom = next; transform();
 }
-let drag = null;
+let drag = null, pinch = null, gestureRevision = 0, suppressCanvasClickUntil = 0;
+const canvasPointers = new Map();
+function pinchPoints() {
+  const [a, b] = [...canvasPointers.values()], rect = $('canvas').getBoundingClientRect();
+  return { x: (a.x + b.x) / 2 - rect.left, y: (a.y + b.y) / 2 - rect.top, distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)) };
+}
+function beginPinch() {
+  const point = pinchPoints();
+  pinch = { ...point, zoom, worldX: (point.x - pan.x) / zoom, worldY: (point.y - pan.y) / zoom };
+  drag = null; gestureRevision++; suppressCanvasClickUntil = Date.now() + 800;
+  closeContextMenu(); $('canvas').classList.add('dragging');
+  for (const id of canvasPointers.keys()) $('canvas').setPointerCapture(id);
+}
 $('canvas').onpointerdown = e => {
-  if (e.target.closest('button') || view === 'outline') return;
-  drag = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+  if (view !== 'map' || e.pointerType === 'mouse' && e.button !== 0) return;
+  const onNode = e.target.closest('button');
+  if (onNode && e.pointerType !== 'touch') return;
+  canvasPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (canvasPointers.size >= 2) { beginPinch(); e.preventDefault(); return; }
+  if (onNode) return; // Keep ordinary taps and long presses on nodes.
+  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
   $('canvas').setPointerCapture(e.pointerId); $('canvas').classList.add('dragging');
 };
-$('canvas').onpointermove = e => { if (drag) { pan = { x: drag.px + e.clientX - drag.x, y: drag.py + e.clientY - drag.y }; transform(); } };
-function endDrag() { drag = null; $('canvas').classList.remove('dragging'); }
+$('canvas').onpointermove = e => {
+  if (!canvasPointers.has(e.pointerId)) return;
+  canvasPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && canvasPointers.size >= 2) {
+    e.preventDefault();
+    const point = pinchPoints();
+    zoom = Math.max(.08, Math.min(2, pinch.zoom * point.distance / pinch.distance));
+    pan = { x: point.x - pinch.worldX * zoom, y: point.y - pinch.worldY * zoom };
+    suppressCanvasClickUntil = Date.now() + 800; transform();
+  } else if (drag?.id === e.pointerId) {
+    pan = { x: drag.px + e.clientX - drag.x, y: drag.py + e.clientY - drag.y }; transform();
+  }
+};
+function endDrag(e) {
+  if (!canvasPointers.delete(e.pointerId)) return;
+  const wasPinching = !!pinch;
+  if (wasPinching) suppressCanvasClickUntil = Date.now() + 800;
+  if (canvasPointers.size >= 2) { beginPinch(); return; }
+  pinch = null; drag = null;
+  if (wasPinching && canvasPointers.size === 1) {
+    const [id, point] = [...canvasPointers.entries()][0];
+    drag = { id, x: point.x, y: point.y, px: pan.x, py: pan.y };
+  } else $('canvas').classList.remove('dragging');
+}
+function resetCanvasGesture() {
+  const ids = [...canvasPointers.keys()];
+  canvasPointers.clear(); drag = null; pinch = null; gestureRevision++;
+  $('canvas').classList.remove('dragging');
+  for (const id of ids) if ($('canvas').hasPointerCapture(id)) $('canvas').releasePointerCapture(id);
+}
 $('canvas').onpointerup = endDrag; $('canvas').onpointercancel = endDrag;
+$('canvas').onlostpointercapture = e => { if (e.target === $('canvas')) endDrag(e); };
+window.addEventListener('blur', resetCanvasGesture);
+for (const type of ['click', 'dblclick']) $('canvas').addEventListener(type, e => {
+  if (e.detail !== 0 && (pinch || Date.now() < suppressCanvasClickUntil)) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 $('canvas').addEventListener('wheel', e => { if (view !== 'map') return; e.preventDefault(); scale(e.deltaY > 0 ? .92 : 1.08); }, { passive: false });
 $('zoomIn').onclick = () => scale(1.15); $('zoomOut').onclick = () => scale(1 / 1.15);
 $('fitBtn').onclick = fit; $('resetView').onclick = fit;
@@ -666,6 +716,7 @@ $('importFile').onchange = async e => {
   e.target.value = '';
 };
 function switchView(next) {
+  resetCanvasGesture();
   view = next; $('world').hidden = next === 'outline'; $('outline').hidden = next !== 'outline';
   $('mapView').classList.toggle('selected', next === 'map'); $('outlineView').classList.toggle('selected', next === 'outline');
   $('canvas').style.cursor = next === 'map' ? 'grab' : 'default';
@@ -794,8 +845,9 @@ function installNodeMenu(button, id) {
   let timer, start;
   button.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
-    start = { x: e.clientX, y: e.clientY }; clearTimeout(timer);
+    start = { x: e.clientX, y: e.clientY, revision: gestureRevision }; clearTimeout(timer);
     timer = setTimeout(() => {
+      if (start.revision !== gestureRevision || pinch || Date.now() < suppressCanvasClickUntil) return;
       longPressedNode = id; longPressedAt = Date.now();
       openContextMenu({ clientX: start.x, clientY: start.y, currentTarget: button, preventDefault() {}, stopPropagation() {} }, id);
     }, 550);
