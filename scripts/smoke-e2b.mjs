@@ -13,6 +13,7 @@ if (key && !key.startsWith('e2b_')) { console.error('E2B_API_KEY is set, but eve
 if (!key) throw Error('Set platform E2B_API_KEY to run the live sandbox test.');
 const taskIds = [];
 async function task(marker) {
+  const expectedOutputBudget = marker === 'isolated-alpha' ? 16384 : 8192;
   const directory = 'skills/method', file = Buffer.from('import os, json\ncontext=json.load(open("/workspace/task/map-context.json"))\nassert context["totalNodes"]==2 and context["target"]["id"]=="root"\nassert not os.environ.get("E2B_API_KEY")\nassert not os.path.exists("/var/lib/mind/projects.sqlite")\nprint("' + marker + '")\n');
   const children = ['边界是什么？','风险如何验证？','方案如何验收？'].map(title => ({ title, note:'【决策意义】明确当前项目任务的约束和判断标准，避免在资料不足时采用未经验证的假设。【验证方式】使用本项目的方法与脚本开展可重复的小范围检查，根据执行结果确认需要调整的条件。', sourceIds:[] }));
   const script = [
@@ -24,7 +25,7 @@ async function task(marker) {
   ];
   let sawCommandOutput = false;
   const events = [];
-  const result = await runE2BAgent({ apiKey:key, template:process.env.E2B_TEMPLATE_ID || '', runtimeArchive:resolve(process.env.SANDBOX_RUNTIME_ARCHIVE || (existsSync('.release/stage/sandbox-runtime.tar.gz') ? '.release/stage/sandbox-runtime.tar.gz' : 'sandbox-runtime.tar.gz')), connection:{url:'https://api.vendor.com/v1/chat/completions',model:'tool-capable-model',key:'not-a-paid-key'},
+  const result = await runE2BAgent({ apiKey:key, template:process.env.E2B_TEMPLATE_ID || '', runtimeArchive:resolve(process.env.SANDBOX_RUNTIME_ARCHIVE || (existsSync('.release/stage/sandbox-runtime.tar.gz') ? '.release/stage/sandbox-runtime.tar.gz' : 'sandbox-runtime.tar.gz')), connection:{url:'https://api.vendor.com/v1/chat/completions',model:'tool-capable-model',key:'not-a-paid-key',maxOutputTokens:expectedOutputBudget},
     job:{mapContext:buildMapContext({workspace:{maps:[{id:'map',title:'全局上下文',root:{id:'root',title:'目标主题',children:[{id:'other',title:'另一个分支的约束',note:'全局规则',children:[]}]}}]}},'map','root'),project:{id:'smoke-'+marker,name:marker},topic:'任务隔离验证',title:'隔离边界',brief:'控制响应验证',note:'',instruction:'',ancestors:[],ancestorContext:[],existing:[],mode:'questions',quantity:3},
     skills:[{id:'method',name:'隔离验证方法',version:'1',description:'执行本地检查',content:'# 隔离验证\n读取 scripts/check.py 并执行，不能编造验证结果。',directory,files:[{path:'SKILL.md',base64:Buffer.from('# 隔离验证\n执行本地检查').toString('base64'),sha256:createHash('sha256').update('# 隔离验证\n执行本地检查').digest('hex')},{path:'scripts/check.py',base64:file.toString('base64'),sha256:createHash('sha256').update(file).digest('hex')}]}],
     sandboxFactory:async options=>{try{return await Sandbox.create(options);}catch(error){
@@ -32,7 +33,7 @@ async function task(marker) {
       console.error('E2B create diagnostic: '+error.name+' — '+message.slice(0,600));throw error;
     }},
     emit:event=>{events.push(event);if(event.type==='sandbox_created')taskIds.push(event.taskId);console.log(marker + ': ' + event.type + (event.tool ? ' '+event.tool : '') + (event.reason ? ' '+event.reason : ''));},
-    modelProxy:async(connection,raw,signal,onStream)=>{const body=JSON.parse(raw);if(body.messages.some(m=>{if(m.role!=='tool')return false;try{return JSON.parse(m.content).output?.trim()===marker;}catch{return false;}}))sawCommandOutput=true;const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);const bytes=Buffer.from(await response.text());await onStream({type:'start',status:200,contentType:'text/event-stream'});for(let offset=0;offset<bytes.length;offset+=512)await onStream({type:'chunk',data:bytes.subarray(offset,offset+512)});return {status:200,contentType:'text/event-stream',streamed:true};},
+    modelProxy:async(connection,raw,signal,onStream)=>{const body=JSON.parse(raw);assert.equal(body.max_tokens,expectedOutputBudget);if(body.messages.some(m=>{if(m.role!=='tool')return false;try{return JSON.parse(m.content).output?.trim()===marker;}catch{return false;}}))sawCommandOutput=true;const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);const bytes=Buffer.from(await response.text());await onStream({type:'start',status:200,contentType:'text/event-stream'});for(let offset=0;offset<bytes.length;offset+=512)await onStream({type:'chunk',data:bytes.subarray(offset,offset+512)});return {status:200,contentType:'text/event-stream',streamed:true};},
   });
   assert.equal(result.children.length,3);assert.equal(result.agent.sandbox.provider,'e2b');assert.equal(result.agent.selectedSkills[0].id,'method');
   assert.equal(sawCommandOutput,true,'Real script output must reach the next Pi model turn');

@@ -65,3 +65,27 @@ test('a complete SSE DONE frame is delivered immediately even when the upstream 
  const result=await brokerModel(connection,raw,controller.signal,event=>{if(event.type==='chunk'){received.push(event.data);if(Buffer.concat(received).toString().includes('[DONE]'))controller.abort({code:'MODEL_CONSUMER_DONE'});}},{resolve,request:upstream({chunks:[[3,Buffer.from('data: [DONE]\n\n')]],end:300}),timeouts:{firstByteMs:100,idleMs:100,totalMs:500}});
  assert.equal(result.streamed,true);assert.match(Buffer.concat(received).toString(),/\[DONE\]/);
 });
+
+test('SSE transport exceeding the old 2 MiB ceiling completes with bounded relay backpressure',async()=>{
+ const {once}=await import('node:events');
+ const frame=Buffer.from('data: '+JSON.stringify({choices:[{delta:{content:'a'}}],padding:'x'.repeat(900)})+'\n\n');
+ const count=3500;let produced=0,delivered=0,maxAhead=0;
+ const request=(url,options,callback)=>{
+  const response=new PassThrough({highWaterMark:16384});response.statusCode=200;response.headers={'content-type':'text/event-stream'};const req=new EventEmitter();
+  req.end=()=>queueMicrotask(async()=>{callback(response);try{for(let i=0;i<count;i++){produced+=frame.length;maxAhead=Math.max(maxAhead,produced-delivered);if(!response.write(frame))await once(response,'drain');}response.end();}catch{}});
+  req.destroy=()=>response.destroy();return req;
+ };
+ const result=await brokerModel(connection,raw,undefined,async event=>{if(event.type==='chunk'){await new Promise(resolve=>setImmediate(resolve));delivered+=event.data.length;}},{resolve,request});
+ assert.ok(produced>2*1024*1024);assert.equal(delivered,produced);assert.equal(result.streamed,true);assert.equal(result.body,undefined);
+ assert.ok(maxAhead<256*1024,'Producer must pause rather than queue the entire model stream');
+});
+test('wire, individual SSE event and token budgets are independent limits',async()=>{
+ const {MODEL_TRANSFER_LIMITS}=await import('../runtime/model-limits.mjs');
+ const frame='data: '+JSON.stringify({text:'x'.repeat(40)})+'\n\n';
+ await assert.rejects(brokerModel(connection,raw,undefined,()=>{},{resolve,request:upstream({chunks:[[1,Buffer.from(frame.repeat(10))]],end:20}),limits:{...MODEL_TRANSFER_LIMITS,wireBytes:100}}),e=>e.code==='AGENT_MODEL_RESPONSE_LIMIT');
+ await assert.rejects(brokerModel(connection,raw,undefined,()=>{},{resolve,request:upstream({chunks:[[1,Buffer.from(frame)]],end:20}),limits:{...MODEL_TRANSFER_LIMITS,eventBytes:20}}),e=>e.code==='AGENT_MODEL_EVENT_LIMIT');
+ let requested;
+ const base=upstream({chunks:[[1,Buffer.from('data: [DONE]\n\n')]],end:10});
+ const request=(url,options,callback)=>{const req=base(url,options,callback),end=req.end;req.end=payload=>{requested=JSON.parse(payload).max_tokens;end(payload);};return req;};
+ await brokerModel({...connection,maxOutputTokens:16384},JSON.stringify({messages:[],tools:[],max_tokens:16384}),undefined,()=>{},{resolve,request});assert.equal(requested,16384);
+});

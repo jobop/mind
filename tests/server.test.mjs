@@ -178,3 +178,14 @@ test('streaming endpoint forwards safe progress, then exactly one committed resu
     assert.equal(events.at(-1).result.children.length, 3);
   } finally { globalThis.fetch = saved; delete env.AGENT_RUNNER; }
 });
+
+test('model output budget is configurable, encrypted with the connection and returned without the key',async()=>{
+ const saved=env.AGENT_TEST;let tested=0;
+ env.AGENT_TEST=async c=>{tested++;assert.equal(c.maxOutputTokens,16384);};
+ try{
+  const s=session();
+  const invalid=await s('/api/connection',{base:'https://api.vendor.com/v1',model:'custom-model',key:'test-budget-key',maxOutputTokens:100000});assert.equal(invalid.status,400);assert.equal(tested,0);
+  const response=await s('/api/connection',{base:'https://api.vendor.com/v1',model:'custom-model',key:'test-budget-key',maxOutputTokens:16384});assert.equal(response.status,200);assert.equal(tested,1);
+  const config=await(await s('/api/config')).json();assert.equal(config.maxOutputTokens,16384);assert.equal(config.key,undefined);
+ }finally{if(saved)env.AGENT_TEST=saved;else delete env.AGENT_TEST;}
+});

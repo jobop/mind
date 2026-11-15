@@ -1,3 +1,4 @@
+import { MODEL_TRANSFER_LIMITS, maxOutputTokens } from './model-limits.mjs';
 import https from 'node:https';
 import { lookup } from 'node:dns/promises';
 import { StringDecoder } from 'node:string_decoder';
@@ -12,26 +13,26 @@ export function modelHttpError(status){
   return new ModelTransportError('AGENT_MODEL_HTTP','模型服务返回 HTTP '+status+'，本次调用未完成');
 }
 // This is a streaming transport. Only a small redaction tail and a short batching buffer are held.
-export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup,request=https.request,timeouts=MODEL_TIMEOUTS}={}){
-  if(typeof raw!=='string'||Buffer.byteLength(raw)>1024*1024)throw new ModelTransportError('AGENT_MODEL_REQUEST','模型请求超过大小限制');
+export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup,request=https.request,timeouts=MODEL_TIMEOUTS,limits=MODEL_TRANSFER_LIMITS}={}){
+  if(typeof raw!=='string'||Buffer.byteLength(raw)>limits.requestBytes)throw new ModelTransportError('AGENT_MODEL_REQUEST','模型请求超过平台传输上限（默认 8 MiB），与模型上下文窗口上限不同');
   const input=JSON.parse(raw);if(!Array.isArray(input.messages)||!Array.isArray(input.tools))throw new ModelTransportError('AGENT_MODEL_REQUEST','模型工具请求格式不正确');
   const url=publicUrl(connection.url),controller=new AbortController();let timeoutError;
   const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   const total=setTimeout(()=>{timeoutError=new ModelTransportError('AGENT_MODEL_TOTAL_TIMEOUT','单次模型调用超过 5 分钟总时限');controller.abort();},timeouts.totalMs);
   let headerTimer,firstTimer,idleTimer,flushTimer,req,response,received=false;
   const timed=(code,message)=>{timeoutError=new ModelTransportError(code,message);controller.abort();};
-  let streamError,sendChain=Promise.resolve(),buffer=[],bufferBytes=0,started=false;
+  let streamError,sendChain=Promise.resolve(),buffer=[],bufferBytes=0,queuedBytes=0,started=false;
   const flush=()=>{
     clearTimeout(flushTimer);flushTimer=null;if(!bufferBytes)return;
-    const data=Buffer.concat(buffer);buffer=[];bufferBytes=0;
-    sendChain=sendChain.then(async()=>{if(streamError)return;try{await onStream?.({type:'chunk',data});}catch{streamError=new ModelTransportError('AGENT_MODEL_RELAY','模型数据转发到沙箱时连接中断');controller.abort();}});
+    const data=Buffer.concat(buffer);buffer=[];bufferBytes=0;queuedBytes+=data.length;
+    sendChain=sendChain.then(async()=>{try{if(!streamError&&!controller.signal.aborted)await onStream?.({type:'chunk',data});}catch{streamError=new ModelTransportError('AGENT_MODEL_RELAY','模型数据转发到沙箱时连接中断');controller.abort();}finally{queuedBytes-=data.length;}});
   };
   const queue=data=>{if(!data.length)return;buffer.push(data);bufferBytes+=data.length;if(!started||bufferBytes>=8192){started=true;flush();}else if(!flushTimer)flushTimer=setTimeout(flush,100);};
   try{
     headerTimer=setTimeout(()=>timed('AGENT_MODEL_FIRST_BYTE_TIMEOUT','等待模型首包超过 120 秒，服务尚未开始响应'),timeouts.firstByteMs);
     const addresses=await Promise.race([resolve(url.hostname,{all:true,verbatim:true}),new Promise((_,reject)=>{if(controller.signal.aborted)reject(Error('Aborted'));else controller.signal.addEventListener('abort',()=>reject(Error('Aborted')),{once:true});})]);
     if(!addresses.length||addresses.some(a=>!isPublicAddress(a.address)))throw new ModelTransportError('AGENT_MODEL_ADDRESS','模型地址指向非公网服务，已拒绝连接');
-    const address=addresses[0],payload=JSON.stringify({...input,model:connection.model,stream:true,max_tokens:Math.min(Number(input.max_tokens)||3600,3600)});
+    const address=addresses[0],payload=JSON.stringify({...input,model:connection.model,stream:true,max_tokens:Math.min(Math.max(1,Number(input.max_tokens)||maxOutputTokens(connection)),maxOutputTokens(connection))});
     response=await new Promise((done,fail)=>{
       req=request(url,{method:'POST',agent:false,signal:controller.signal,lookup(host,options,callback){options.all?callback(null,[address]):callback(null,address.address,address.family);},headers:{Authorization:'Bearer '+connection.key,'Content-Type':'application/json',Accept:'text/event-stream','Accept-Encoding':'identity','Content-Length':Buffer.byteLength(payload)}},done);
       req.on('error',fail);req.end(payload);
@@ -42,7 +43,11 @@ export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup
     if(!/text\/event-stream/i.test(contentType)){response.destroy();throw new ModelTransportError('AGENT_MODEL_PROTOCOL','模型服务未返回 SSE 流，请确认接口支持流式工具调用');}
     try { await onStream?.({type:'start',status,contentType}); } catch { throw new ModelTransportError('AGENT_MODEL_RELAY','模型响应头转发到沙箱失败'); }
     firstTimer=setTimeout(()=>timed('AGENT_MODEL_FIRST_BYTE_TIMEOUT','模型已连接，但超过 120 秒没有返回首段数据'),timeouts.firstByteMs);
-    const decoder=new StringDecoder('utf8'),secret=connection.key||'';let tail='',size=0,body='';
+    const decoder=new StringDecoder('utf8'),secret=connection.key||'';let tail='',size=0,body='',eventTail='';
+    const checkEvents=text=>{
+      const frames=(eventTail+text).split(/\r?\n\r?\n/);eventTail=frames.pop();
+      if(frames.some(frame=>Buffer.byteLength(frame)>limits.eventBytes)||Buffer.byteLength(eventTail)>limits.eventBytes)throw new ModelTransportError('AGENT_MODEL_EVENT_LIMIT','单个 SSE 事件超过平台限制（默认 1 MiB），并非模型上下文容量限制');
+    };
     const redact=(text,last=false)=>{
       tail+=text;if(secret)tail=tail.split(secret).join('[redacted]');
       // API keys cannot contain newlines. A complete SSE frame is therefore a safe flush boundary.
@@ -54,9 +59,10 @@ export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup
     for await(const chunk of response){
       received=true;clearTimeout(firstTimer);clearTimeout(idleTimer);
       idleTimer=setTimeout(()=>timed('AGENT_MODEL_IDLE_TIMEOUT','模型流式响应已开始，但连续 90 秒没有新数据'),timeouts.idleMs);
-      size+=chunk.length;if(size>2*1024*1024)throw new ModelTransportError('AGENT_MODEL_RESPONSE_LIMIT','模型流式响应超过大小限制');
-      redact(decoder.write(chunk));
-      if(bufferBytes>=65536)await sendChain;
+      size+=chunk.length;if(size>limits.wireBytes)throw new ModelTransportError('AGENT_MODEL_RESPONSE_LIMIT','模型 SSE 累计传输量超过平台上限（默认 64 MiB，包含事件开销），并非模型 token 上限');
+      if(!onStream&&size>limits.bufferedBytes)throw new ModelTransportError('AGENT_MODEL_BUFFER_LIMIT','非流式兼容调用超过缓冲上限，请使用流式转发');
+      const text=decoder.write(chunk);checkEvents(text);redact(text);
+      if(queuedBytes>=limits.relayQueueBytes)await sendChain;
     }
     clearTimeout(firstTimer);clearTimeout(idleTimer);
     redact(decoder.end(),true);flush();await sendChain;
@@ -70,6 +76,6 @@ export async function brokerModel(connection,raw,signal,onStream,{resolve=lookup
     if(['ENOTFOUND','EAI_AGAIN'].includes(error.code))throw new ModelTransportError('AGENT_MODEL_DNS','无法解析模型服务地址，请检查接口域名');
     throw new ModelTransportError(received?'AGENT_MODEL_STREAM_INTERRUPTED':'AGENT_MODEL_NETWORK',received?'模型流在结束前中断，未收到完整工具调用':'无法建立模型连接，请检查模型服务网络');
   }finally{
-    clearTimeout(total);clearTimeout(headerTimer);clearTimeout(firstTimer);clearTimeout(idleTimer);clearTimeout(flushTimer);signal?.removeEventListener('abort',abort);response?.destroy();req?.destroy();
+    clearTimeout(total);clearTimeout(headerTimer);clearTimeout(firstTimer);clearTimeout(idleTimer);clearTimeout(flushTimer);signal?.removeEventListener('abort',abort);response?.destroy();req?.destroy();await sendChain;
   }
 }

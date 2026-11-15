@@ -571,6 +571,7 @@ function openSettings() {
   if ($('settingsDialog').open) return;
   $('apiBase').value = connection.base || '';
   $('modelName').value = connection.model || '';
+  $('modelMaxOutputTokens').value = connection.maxOutputTokens || 8192;
   $('apiKey').value = '';
   $('apiKey').placeholder = connection.configured ? '已安全保存；保持地址不变可留空沿用' : '请输入你的 API Key';
   $('providerPreset').value = Object.keys(presets).find(k => presets[k].base === connection.base) || 'custom';
@@ -590,13 +591,13 @@ $('providerPreset').onchange = e => {
   $('apiKey').value = '';
 };
 function connectionControls(disabled) {
-  for (const id of ['connectModel', 'disconnectModel', 'apiBase', 'modelName', 'apiKey', 'providerPreset']) $(id).disabled = disabled;
+  for (const id of ['connectModel', 'disconnectModel', 'apiBase', 'modelName', 'apiKey', 'providerPreset', 'modelMaxOutputTokens']) $(id).disabled = disabled;
   $('connectModel').textContent = disabled ? '正在验证真实连接…' : '连接并验证';
 }
 $('settingsForm').onsubmit = async e => {
   e.preventDefault(); if (connecting) return;
   if (busy) return toast('请先等待或取消当前生成，再修改模型连接');
-  const input = { base: $('apiBase').value.trim(), model: $('modelName').value.trim(), key: $('apiKey').value.trim() };
+  const input = { base: $('apiBase').value.trim(), model: $('modelName').value.trim(), maxOutputTokens: Number($('modelMaxOutputTokens').value) || 8192, key: $('apiKey').value.trim() };
   if (!input.base || !input.model || !input.key && (!connection.configured || connection.base !== input.base.replace(/\/$/, '').replace(/\/chat\/completions$/, ''))) {
     $('connectionError').textContent = '请填写接口地址、模型名称和 API Key'; $('connectionError').hidden = false; return;
   }

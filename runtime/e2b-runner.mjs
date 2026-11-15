@@ -75,13 +75,15 @@ export async function runE2BAgent({ apiKey, template, runtimeArchive, connection
     await sandbox.commands.run('mkdir -p /opt/mind-agent /workspace/task && tar -xzf /home/user/mind-runtime.tar.gz -C /opt/mind-agent && rm -f /home/user/mind-runtime.tar.gz && chown -R user:user /workspace/task && /opt/mind-agent/bin/node --version', { user: 'root', timeoutMs: 60000, signal: controller.signal });
     handle = await sandbox.commands.run('exec /opt/mind-agent/bin/node /opt/mind-agent/runtime/sandbox-task.mjs', { user: 'user', background: true, stdin: true, timeoutMs: 930000, retainOutput: false, signal: controller.signal, onStderr: () => {}, onStdout: chunk => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer) > 2 * 1024 * 1024) { failure = new AgentRunError('沙箱消息超过限制', 'AGENT_SANDBOX_FAILED'); controller.abort(); return; }
+
       let index;
       while ((index = buffer.indexOf('\n')) !== -1) { const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+        if (Buffer.byteLength(line) > 24 * 1024 * 1024) { failure = new AgentRunError('单条沙箱消息超过平台限制（24 MiB）', 'AGENT_SANDBOX_FAILED'); controller.abort(); return; }
         try { const message = JSON.parse(line); if (message.type === 'rpc_cancel') { modelControllers.get(message.id)?.abort({code:message.reason==='consumer_done'?'MODEL_CONSUMER_DONE':'MODEL_REQUEST_ABORTED'}); continue; } } catch {}
         chain = chain.then(() => processLine(line)).catch(() => { failure = new AgentRunError('沙箱通信失败', 'AGENT_SANDBOX_FAILED'); controller.abort(); }); }
+      if (Buffer.byteLength(buffer) > 24 * 1024 * 1024) { failure = new AgentRunError('单条沙箱消息超过平台限制（24 MiB）', 'AGENT_SANDBOX_FAILED'); controller.abort(); }
     } });
-    await sandbox.files.write('/workspace/task/input.json', JSON.stringify({ connection: { url: connection.url, model: connection.model, key: 'brokered-no-real-key' }, job, skills }), { requestTimeoutMs: 60000, signal: controller.signal });
+    await sandbox.files.write('/workspace/task/input.json', JSON.stringify({ connection: { url: connection.url, model: connection.model, key: 'brokered-no-real-key', maxOutputTokens: connection.maxOutputTokens }, job, skills }), { requestTimeoutMs: 60000, signal: controller.signal });
     await send({ type: 'start' });
     let exitError;
     try { await handle.wait(); } catch (error) { exitError = error; }

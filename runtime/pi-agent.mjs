@@ -1,3 +1,4 @@
+import { maxOutputTokens } from './model-limits.mjs';
 import { Agent } from '@earendil-works/pi-agent-core';
 import { createPiModel, safeModelError } from './pi-model.mjs';
 import { readPublicPage } from './public-page.mjs';
@@ -176,7 +177,7 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
   const labels = new Map(tools.map(t => [t.name, t.label]));
   const { model, models } = createPiModel(connection);
   const baseStream = injectedStream || ((m, context, options) => models.streamSimple(m, context, {
-    ...options, maxTokens: 3600, timeoutMs: 300000, maxRetries: 0, toolChoice: 'auto',
+    ...options, maxTokens: maxOutputTokens(connection), timeoutMs: 300000, maxRetries: 0, toolChoice: 'auto',
   }));
   agent = new Agent({
     initialState: { systemPrompt: systemPrompt + (projectScoped ? '\n当前为个人项目模式：Skill 仅限当前项目启用的库。先用 list_project_skills 获取目录，再依据节点任务用 read_skill 的 id 参数读取 1–4 个相关方法。必须实际读取方法后才能校验或提交；不得使用其他项目或未加入本项目的 Skill。' : '') + (executionTools.length ? '\n已在独立任务容器准备项目 Skill 文件，目录在 list_project_skills 的 directory 字段。read_skill 读取真实 SKILL.md。可用 read_task_file、write_task_file 和 run_command 执行方法要求的本地步骤；命令不能联网，依赖未安装时应明确报告，不能编造执行成功。只能使用当前容器中已有资料和工具。' : ''), model, tools, thinkingLevel: 'off' },

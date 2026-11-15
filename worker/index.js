@@ -88,7 +88,7 @@ async function connection(request, env, required = true) {
   return null;
 }
 function publicConnection(c) {
-  return c ? { configured: true, model: c.model, base: c.url.replace(/\/chat\/completions$/, ''), source: c.source, expires: c.expires || null } : { configured: false };
+  return c ? { configured: true, maxOutputTokens: c.maxOutputTokens || 8192, model: c.model, base: c.url.replace(/\/chat\/completions$/, ''), source: c.source, expires: c.expires || null } : { configured: false };
 }
 function checkOrigin(request) {
   if (request.headers.get('Origin') !== new URL(request.url).origin || request.headers.get('X-Branch-Request') !== '1') {
@@ -118,7 +118,7 @@ async function completion(c, messages, request, { test = false, retry = false } 
       upstream = await fetch(c.url, {
         method: 'POST', redirect: 'error', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.key },
-        body: JSON.stringify({ model: c.model, stream: false, max_tokens: test ? 64 : 3600, messages }),
+        body: JSON.stringify({ model: c.model, stream: false, max_tokens: test ? 64 : (c.maxOutputTokens || 8192), messages }),
       });
     } catch (error) {
       if (controller.signal.aborted) throw new AppError(request.signal.aborted ? '生成已取消' : '模型响应超时，请重试或更换模型', 504, 'TIMEOUT');
@@ -178,7 +178,7 @@ function parseBranches(content, quantity, existing) {
 }
 async function route(request, env) {
   const path = new URL(request.url).pathname;
-  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.1.1', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
+  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.1.2', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
   if (!path.startsWith('/api/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: '不支持的请求方法' }, 405);
     const asset = ASSETS[path === '/index.html' ? '/' : path];
@@ -186,7 +186,7 @@ async function route(request, env) {
   }
   if (env.PROJECT_SERVICE && (path.startsWith('/api/auth/') || path === '/api/projects' || path.startsWith('/api/projects/'))) return env.PROJECT_SERVICE.handle(request);
   if (path === '/api/config' && request.method === 'GET') {
-    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.1.1', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
+    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.1.2', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
   }
   if (env.PROJECT_SERVICE) env.PROJECT_SERVICE.user(request);
   if (env.GENERATION_JOBS && (path === '/api/generation-jobs' || path.startsWith('/api/generation-jobs/'))) return env.GENERATION_JOBS.handle(request);
@@ -209,7 +209,9 @@ async function route(request, env) {
     }
     if (key.length > 1000 || /[\s\x00-\x1f\x7f]/.test(key)) throw new AppError('API Key 格式不正确');
     await encryptionKey(env);
-    const c = { url, model, key };
+    const maxOutputTokens = input.maxOutputTokens ?? 8192;
+    if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > 65536) throw new AppError('输出预算需为 128–65536 的整数，请按服务商支持范围填写');
+    const c = { url, model, key, maxOutputTokens };
     const release = acquire(request, env);
     try {
       if (env.AGENT_TEST) await env.AGENT_TEST(c, request.signal);

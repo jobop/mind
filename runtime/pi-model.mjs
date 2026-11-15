@@ -1,3 +1,4 @@
+import { maxOutputTokens } from './model-limits.mjs';
 import { createModels, createProvider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 
@@ -6,7 +7,7 @@ export function createPiModel(connection) {
   const model = {
     id: connection.model, name: connection.model, api: 'openai-completions', provider: 'branch-custom', baseUrl,
     reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000, maxTokens: 4096,
+    contextWindow: 128000, maxTokens: maxOutputTokens(connection),
     compat: { supportsDeveloperRole: false, supportsStore: false, supportsReasoningEffort: false, supportsUsageInStreaming: false, maxTokensField: 'max_tokens' },
   };
   const models = createModels({ identity: { attribution: null } });
