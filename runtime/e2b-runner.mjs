@@ -1,3 +1,4 @@
+import { platformE2BKey } from './platform-config.mjs';
 import { Sandbox } from 'e2b';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +32,7 @@ export async function brokerModel(connection, raw, signal) {
 let active = 0;
 const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready']);
 export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage }) {
+  apiKey = platformE2BKey(apiKey);
   if (!apiKey) throw new AgentRunError('平台尚未配置 E2B 沙箱，请联系维护者配置 E2B_API_KEY', 'AGENT_SANDBOX_NOT_CONFIGURED');
   if (active >= 3) throw new AgentRunError('平台沙箱繁忙，请稍后重试', 'AGENT_SANDBOX_BUSY');
   if (!Array.isArray(skills) || !skills.length) throw new AgentRunError('项目尚未准备 Skill 文件', 'AGENT_NO_SKILLS');

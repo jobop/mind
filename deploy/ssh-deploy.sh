@@ -51,7 +51,10 @@ remote_script="$remote_dir/remote-install.sh"
 if [[ -n ${E2B_API_KEY:-} ]]; then
   python3 - "$work/e2b-settings.json" <<'PYCONFIG'
 import os,sys,json
-value=os.environ['E2B_API_KEY']
+value=os.environ['E2B_API_KEY'].strip()
+import re
+value=re.sub(r'^(?:export\s+)?E2B_API_KEY\s*=\s*','',value).strip()
+if len(value)>1 and value[0] in [chr(34),chr(39),chr(96)] and value[-1]==value[0]:value=value[1:-1].strip()
 if not value or len(value)>1000 or any(c.isspace() for c in value):raise SystemExit('Invalid E2B credential format')
 with open(sys.argv[1],'w') as file:json.dump({'E2B_API_KEY':value,'E2B_TEMPLATE_ID':os.environ.get('E2B_TEMPLATE_ID','')},file)
 os.chmod(sys.argv[1],0o600)

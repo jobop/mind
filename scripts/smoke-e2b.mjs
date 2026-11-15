@@ -1,4 +1,5 @@
 // Real E2B VMs and real Pi SDK, with controlled SSE model responses (no paid LLM request).
+import { platformE2BKey } from '../runtime/platform-config.mjs';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -6,7 +7,8 @@ import { Sandbox, NotFoundError } from 'e2b';
 import { createHash } from 'node:crypto';
 import { runE2BAgent } from '../runtime/e2b-runner.mjs';
 import { sseMessage } from '../tests/fixtures/pi-sse.mjs';
-const key = process.env.E2B_API_KEY;
+const key = platformE2BKey(process.env.E2B_API_KEY);
+if (key && !key.startsWith('e2b_')) { console.error('E2B_API_KEY is set, but even after removing whitespace, quotes and assignment syntax it does not begin with e2b_. Verify the repository Secret name and its actual value.'); process.exit(1); }
 if (!key) throw Error('Set platform E2B_API_KEY to run the live sandbox test.');
 const taskIds = [];
 async function task(marker) {

@@ -65,3 +65,9 @@ test('task failure, cancellation and runtime-upload failure all trigger sandbox 
     }
   }finally{await rm(directory,{recursive:true,force:true});}
 });
+
+
+test('platform E2B credentials accept copy formatting without disclosing their value', async () => {
+  const { platformE2BKey } = await import('../runtime/platform-config.mjs');
+  for (const input of [' e2b_test \n', 'E2B_API_KEY=e2b_test', 'export E2B_API_KEY="e2b_test"', "'e2b_test'"]) assert.equal(platformE2BKey(input), 'e2b_test');
+});
