@@ -55,6 +55,8 @@ test('E2B model bridge delivers first bytes before completion, ignores duplicate
 test('consumer completion closes only its model request while explicit cancellation aborts streaming',async()=>{
  const sent=[],bridge=createModelStream({send:m=>sent.push(m),nextId:()=>1});const pending=bridge.fetchModel(raw);
  bridge.handle({type:'rpc_stream_start',id:1,status:200,contentType:'text/event-stream'});const response=await pending;await response.body.cancel();assert.equal(sent.at(-1).reason,'consumer_done');
+ let confirmed=false;const drained=bridge.drain().then(()=>confirmed=true);await Promise.resolve();assert.equal(confirmed,false);
+ bridge.handle({type:'rpc_result',id:1,result:{streamed:true}});await drained;assert.equal(confirmed,true);
  const controller=new AbortController(),pending2=bridge.fetchModel(raw,controller.signal);controller.abort();await assert.rejects(pending2,e=>e.name==='AbortError');assert.equal(sent.at(-1).reason,'aborted');
 });
 
