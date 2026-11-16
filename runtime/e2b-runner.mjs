@@ -8,7 +8,7 @@ import { readPublicPage, PublicPageError } from './public-page.mjs';
 import { AgentRunError } from './pi-agent.mjs';
 export { brokerModel };
 let active = 0;
-const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context','reference_read','reference_cache','resource_status','model_retry']);
+const allowedEvents = new Set(['started','plan','model_request','tool_start','tool_end','tool_recovered','source','validation','completed','skill_catalog','skill_selected','sandbox_ready','finishing','map_context','skill_cache','reference_read','reference_cache','resource_status','model_retry']);
 export async function runE2BAgent({ apiKey, template, runtimeArchive, connection, job, skills, signal, emit = () => {}, sandboxFactory = options => Sandbox.create(options), modelProxy = brokerModel, pageReader = readPublicPage, referenceReader }) {
   apiKey = platformE2BKey(apiKey);
   if (!apiKey) throw new AgentRunError('平台尚未配置 E2B 沙箱，请联系维护者配置 E2B_API_KEY', 'AGENT_SANDBOX_NOT_CONFIGURED');

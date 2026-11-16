@@ -27,7 +27,6 @@ async function task(marker) {
     [{name:'read_skill',args:{id:'method'}}],
     [{name:'read_public_page',args:{url:'https://example.org/blocked'}},{name:'read_reference',args:{id:referenceId}},...Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:repoId,path:'file-'+i+'.md'}})),{name:'read_reference',args:{id:referenceId}}],
     [{name:'run_command',args:{command:'python3 ' + directory + '/scripts/check.py'}}],
-    [{name:'validate_branches',args:{children}}],
     [{name:'submit_branches',args:{children}}],
   ];
   let sawCommandOutput = false;

@@ -18,19 +18,19 @@ const first = [
 test('Pi SDK executes tools, incorporates their results, repairs invalid output and submits once', async () => {
   const saved = globalThis.fetch, events = [], requests = [];
   const bad = [children[0], children[0], children[2]];
-  const script = [first, [{ name: 'read_public_page', args: { url: 'https://garden.org/irrigation' } }], [{ name: 'validate_branches', args: { children: bad } }], [{ name: 'validate_branches', args: { children } }], [{ name: 'submit_branches', args: { children } }]];
+  const script = [first, [{ name: 'read_public_page', args: { url: 'https://garden.org/irrigation' } }], [{ name: 'validate_branches', args: { children: bad } }], [{ name: 'validate_branches', args: { children } }]];
   globalThis.fetch = async (url, options) => {
     assert.equal(new URL(url).pathname, '/v1/chat/completions');
     assert.equal(new Headers(options.headers).get('Authorization'), 'Bearer ' + connection.key);
     const data = JSON.parse(options.body); requests.push(data);
-    assert.equal(data.stream, true); assert.ok(data.tools.some(t => t.function.name === 'read_skill'));
+    assert.equal(data.stream, true); assert.ok(data.tools.some(t => t.function.name === 'submit_branches'));
     const calls = script.shift(); assert.ok(calls, 'No extra model request after final submission');
     return sseMessage(calls);
   };
   try {
     const result = await runPiAgent({ connection, job, skill, hub, emit: event => events.push(event), pageReader: async () => ({ url: 'https://garden.org/irrigation', title: '园艺材料', text: '滴灌系统需定期检查堵塞。', fetchedAt: new Date().toISOString() }) });
     assert.equal(result.agent.framework, 'pi-agent-core'); assert.equal(result.agent.version, '1.5.2');
-    assert.equal(result.children.length, 3); assert.equal(result.agent.modelCalls, 5);
+    assert.equal(result.children.length, 3); assert.equal(result.agent.modelCalls, 4);
     assert.equal(result.agent.sources[0].id, 'S1'); assert.match(result.children[0].note, /\[S1\]/);
     assert.ok(events.some(e => e.type === 'validation' && e.valid === false));
     assert.ok(events.some(e => e.type === 'completed'));
@@ -96,9 +96,7 @@ test('invalid plan parameters surface a safe reason and a successful retry marks
   const nodes = children.map(c => ({ ...c, sourceIds: [] }));
   const script = [
     [{ name: 'plan_work', args: { steps: [{}] } }, ...first.slice(1)],
-    [first[0], { name: 'validate_branches', args: { children: nodes } }],
-    [{ name: 'submit_branches', args: { children: nodes } }],
-  ];
+    [first[0], { name: 'validate_branches', args: { children: nodes } }]];
   globalThis.fetch = async () => sseMessage(script.shift());
   try {
     const result = await runPiAgent({ connection, job, skill, hub, emit: e => events.push(e) });
@@ -113,7 +111,7 @@ test('a different successful webpage does not hide a failed webpage, and raw err
   const script = [first, [
     { name: 'read_public_page', args: { url: 'https://example.org/fails' } },
     { name: 'read_public_page', args: { url: 'https://example.org/works' } },
-  ], [{ name: 'validate_branches', args: { children: nodes } }], [{ name: 'submit_branches', args: { children: nodes } }]];
+  ], [{ name: 'validate_branches', args: { children: nodes } }]];
   globalThis.fetch = async () => sseMessage(script.shift());
   try {
     const result = await runPiAgent({ connection, job, skill, hub, emit: e => events.push(e), pageReader: async url => {
@@ -130,7 +128,7 @@ test('project Agent lists the isolated catalogue, selects multiple methods and n
   const saved = globalThis.fetch, events = [], requests = [];
   const nodes = children.map(c => ({ ...c, sourceIds: [] }));
   const skills = [{ id: 'design', name: '游戏设计', description: '玩法与反馈', version: '1', content: '围绕玩法循环、反馈与玩家动机分析。' }, { id: 'research', name: '用户研究', description: '访谈', version: '1', content: '区分事实与假设，设计实验。' }, { id: 'disabled', name: '停用方法', enabled: false, content: 'must-not-leak' }];
-  const script = [[first[0], first[1], { name: 'list_project_skills', args: {} }], [{ name: 'read_skill', args: { id: 'design' } }, { name: 'read_skill', args: { id: 'research' } }], [{ name: 'validate_branches', args: { children: nodes } }], [{ name: 'submit_branches', args: { children: nodes } }]];
+  const script = [[first[0], first[1], { name: 'list_project_skills', args: {} }], [{ name: 'read_skill', args: { id: 'design' } }, { name: 'read_skill', args: { id: 'research' } }], [{ name: 'validate_branches', args: { children: nodes } }]];
   globalThis.fetch = async (url, options) => {
     const payload = JSON.parse(options.body); requests.push(payload);
     assert.ok(payload.tools.some(t => t.function.name === 'list_project_skills'));
@@ -175,11 +173,11 @@ test('twenty-round budget reserves the last four rounds and accepts omitted empt
   const { AGENT_LIMITS } = await import('../runtime/pi-agent.mjs');assert.equal(AGENT_LIMITS.modelCalls,20);
   const saved=globalThis.fetch,events=[],requests=[];let pages=0;
   const nodes=children.map(({sourceIds,...node})=>node);
-  const script=[first,...Array.from({length:15},()=>[{name:'read_skill',args:{}}]),[{name:'read_public_page',args:{url:'https://garden.org/extra'}}],[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+  const script=[first,...Array.from({length:15},()=>[{name:'read_skill',args:{}}]),[{name:'read_public_page',args:{url:'https://garden.org/extra'}}],[{name:'validate_branches',args:{children:nodes}}]];
   globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
   try{
     const result=await runPiAgent({connection,job,skill,hub,emit:e=>events.push(e),pageReader:async()=>{pages++;throw Error('Should stop exploring');}});
-    assert.equal(result.agent.modelCalls,19);assert.equal(pages,0);
+    assert.equal(result.agent.modelCalls,18);assert.equal(pages,0);
     assert.ok(events.some(e=>e.type==='finishing'&&e.remaining===4));
     assert.ok(requests[16].messages.some(m=>m.role==='user'&&m.content.includes('剩余 4 轮')));
     assert.equal(result.children.length,3);
@@ -196,9 +194,9 @@ test('plan compatibility accepts action objects, long items and a single step wi
  try{
   for(const steps of [[{title:'先理解整树',status:'pending'},{action:'选择领域方法',id:2},{description:'构造并校验分支'}],['行动说明'.repeat(90)],'读取全局\n选择方法\n校验并提交']){
    const nodes=children.map(c=>({...c,sourceIds:[]})),events=[];
-   const script=[[{name:'plan_work',args:{steps}},...first.slice(1)],[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+   const script=[[{name:'plan_work',args:{steps}},...first.slice(1)],[{name:'validate_branches',args:{children:nodes}}]];
    globalThis.fetch=async()=>sseMessage(script.shift());const result=await runPiAgent({connection,job,skill,hub,emit:e=>events.push(e)});
-   assert.equal(result.agent.modelCalls,3);assert.equal(result.agent.toolFailures,0);assert.ok(result.agent.plan.every(s=>typeof s==='string'&&s.length<=240));
+   assert.equal(result.agent.modelCalls,2);assert.equal(result.agent.toolFailures,0);assert.ok(result.agent.plan.every(s=>typeof s==='string'&&s.length<=240));
   }
  }finally{globalThis.fetch=saved;}
 });
@@ -208,7 +206,7 @@ test('node references are read through an ID-scoped tool and real images reach t
   const saved=globalThis.fetch,requests=[],reads=[];
   const reference={id:'image-one',type:'image',name:'场景参考',url:'https://images.example.org/scene.png',description:''};
   const scopedJob={...job,mapContext:{target:{id:'node',index:1,resources:[reference]},nodes:[{id:'node',resources:[reference]}],overview:{outline:[{id:'node'}],references:[reference]}}};
-  const script=[first,[{name:'read_reference',args:{id:'foreign-resource'}},{name:'read_reference',args:{id:reference.id}}],[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+  const script=[first,[{name:'read_reference',args:{id:'foreign-resource'}},{name:'read_reference',args:{id:reference.id}}],[{name:'validate_branches',args:{children}}]];
   globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
   try {
     const result=await runPiAgent({connection:{...connection,visionEnabled:true},job:scopedJob,skill,hub,referenceReader:async id=>{reads.push(id);return {title:reference.name,url:reference.url,description:'',image:{data:'aW1hZ2U=',mimeType:'image/png'}};}});
@@ -233,7 +231,7 @@ test('more than eight distinct repository files can be read and duplicate paths 
  const saved=globalThis.fetch,requests=[],reads=[];
  const resource={id:'repo',type:'git',name:'游戏仓库',url:'https://github.com/team/game',description:''};
  const scoped={...job,mapContext:{target:{id:'node',index:1,resources:[resource]},nodes:[{id:'node',resources:[resource]}],overview:{outline:[],references:[resource]}}};
- const script=[first,Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:'repo',path:'file-'+i+'.md'}})),[{name:'read_reference',args:{id:'repo',path:'./file-0.md'}},{name:'read_reference',args:{id:'repo',path:'file-0.md'}}],[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+ const script=[first,Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:'repo',path:'file-'+i+'.md'}})),[{name:'read_reference',args:{id:'repo',path:'./file-0.md'}},{name:'read_reference',args:{id:'repo',path:'file-0.md'}}],[{name:'validate_branches',args:{children}}]];
  globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
  try{
   const result=await runPiAgent({connection,job:scoped,skill,hub,referenceReader:async(id,args)=>{reads.push(args.path);return {title:args.path,url:resource.url,text:'Repository content '+args.path};}});
@@ -245,7 +243,7 @@ test('more than eight distinct repository files can be read and duplicate paths 
 test('repeated resource reads trigger a submission phase with exploration tools removed',async()=>{
  const saved=globalThis.fetch,requests=[],events=[];let reads=0;
  const scoped={...job,mapContext:{target:{id:'node',index:1},nodes:[{id:'node',resources:[{id:'repo'}]}],overview:{outline:[]}}};
- const script=[first,Array.from({length:4},()=>({name:'read_reference',args:{id:'repo',path:'README.md'}})),[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+ const script=[first,Array.from({length:4},()=>({name:'read_reference',args:{id:'repo',path:'README.md'}})),[{name:'validate_branches',args:{children}}]];
  globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
  try{
   const result=await runPiAgent({connection,job:scoped,skill,hub,emit:e=>events.push(e),referenceReader:async()=>{reads++;return {title:'仓库说明',url:'https://github.com/team/game',text:'实际仓库内容'};}});
@@ -257,7 +255,7 @@ test('a repeated unavailable path is not fetched again and cannot be marked as r
  const saved=globalThis.fetch,requests=[];let reads=0;
  const nodes=children.map(c=>({...c,sourceIds:[]}));
  const scoped={...job,mapContext:{target:{id:'node',index:1},nodes:[{id:'node',resources:[{id:'repo'}]}],overview:{outline:[]}}};
- const script=[first,[{name:'read_reference',args:{id:'repo',path:'missing.md'}}],[{name:'read_reference',args:{id:'repo',path:'missing.md'}}],[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+ const script=[first,[{name:'read_reference',args:{id:'repo',path:'missing.md'}}],[{name:'read_reference',args:{id:'repo',path:'missing.md'}}],[{name:'validate_branches',args:{children:nodes}}]];
  globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
  try{
   const result=await runPiAgent({connection,job:scoped,skill,hub,referenceReader:async()=>{reads++;throw Error('参考资源不可用');}});
@@ -268,14 +266,14 @@ test('a repeated unavailable path is not fetched again and cannot be marked as r
 test('an interrupted partial model turn resumes the same Pi task without repeating completed tools',async()=>{
  const saved=globalThis.fetch,events=[],requests=[];let checks=0,calls=0;
  const nodes=children.map(c=>({...c,sourceIds:[]}));
- const script=[first,[{name:'local_check',args:{}}],null,[{name:'validate_branches',args:{children:nodes}}],[{name:'submit_branches',args:{children:nodes}}]];
+ const script=[first,[{name:'local_check',args:{}}],null,[{name:'validate_branches',args:{children:nodes}}]];
  globalThis.fetch=async(url,options)=>{
   calls++;requests.push(JSON.parse(options.body));const turn=script.shift();if(turn)return sseMessage(turn);
   return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('data: '+JSON.stringify({choices:[{index:0,delta:{tool_calls:[{index:0,id:'incomplete-call',type:'function',function:{name:'local_check',arguments:'{'}}]}}]})+'\n\n'));setTimeout(()=>controller.error(Error('模型流连续 180 秒没有新数据 [AGENT_MODEL_IDLE_TIMEOUT]')),1);}}),{headers:{'Content-Type':'text/event-stream'}});
  };
  try{
   const result=await runPiAgent({connection,job,skill,hub,retryDelayMs:0,emit:e=>events.push(e),executionTools:[{name:'local_check',label:'本地检查',description:'执行一次本地检查',parameters:{type:'object',properties:{}},execute:async()=>{checks++;return {content:[{type:'text',text:'local check completed'}]};}}]});
-  assert.equal(checks,1);assert.equal(calls,5);assert.equal(result.agent.modelRetries,1);assert.ok(events.some(e=>e.type==='model_retry'));
+  assert.equal(checks,1);assert.equal(calls,4);assert.equal(result.agent.modelRetries,1);assert.ok(events.some(e=>e.type==='model_retry'));
   assert.ok(JSON.stringify(requests[3].messages).includes('local check completed'));assert.ok(!JSON.stringify(requests[3].messages).includes('incomplete-call'));
  }finally{globalThis.fetch=saved;}
 });
@@ -294,10 +292,45 @@ test('transient retry is bounded and authentication failures are never automatic
 test('large repository inputs stop at a cumulative text budget and switch to validation',async()=>{
  const saved=globalThis.fetch,requests=[];let reads=0;
  const scoped={...job,mapContext:{target:{id:'node',index:1},nodes:[{id:'node',resources:[{id:'repo'}]}],overview:{outline:[]}}};
- const script=[first,Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:'repo',path:'large-'+i+'.txt'}})),[{name:'validate_branches',args:{children}}],[{name:'submit_branches',args:{children}}]];
+ const script=[first,Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:'repo',path:'large-'+i+'.txt'}})),[{name:'validate_branches',args:{children}}]];
  globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
  try{
   const result=await runPiAgent({connection,job:scoped,skill,hub,referenceReader:async()=>{reads++;return {title:'仓库文件',url:'https://github.com/team/game',text:'x'.repeat(16000)};}});
   assert.ok(reads<10);assert.ok(result.agent.referenceChars<=64000);assert.ok(!requests[2].tools.some(t=>t.function.name==='read_reference'));
+ }finally{globalThis.fetch=saved;}
+});
+
+const solutionNotes = ['调整费用曲线','限制连锁收益','增加验证回放'].map(title=>({title,note:{steps:'先按当前玩法分组记录卡牌费用和收益，用小范围试玩比较改动前后差异，再逐步调整数值。',conditionsAndCosts:'适用于已有基础对局规则且能安排测试的项目，需要保留旧版本并投入对局记录和复盘时间。',acceptance:'在同一组卡牌与测试条件下比较对局时长、策略多样性和异常组合，达到预设标准才扩大改动。'}}));
+const fastSkills=[{id:'game-id',name:'游戏策划',version:'1',description:'卡牌玩法、平衡与验证',content:'按卡牌资源曲线与回合收益分析平衡，并设计可验证实验。'},{id:'sales-id',name:'销售高手',version:'1',description:'销售与商务',content:'销售沟通方法。'}];
+test('a normal solutions task needs two model turns, one relevant Skill and one combined validated save',async()=>{
+ const saved=globalThis.fetch,requests=[];let loads=0;
+ globalThis.fetch=async(url,options)=>{const body=JSON.parse(options.body);requests.push(body);
+  if(requests.length===1){assert.ok(JSON.stringify(body.messages.filter(m=>m.role==='user')).includes('game-id'));return sseMessage([{name:'read_node_context',args:{}},{name:'read_skill',args:{id:'游戏策划'}}]);}
+  assert.equal(requests.length,2);const submit=body.tools.find(t=>t.function.name==='submit_branches');assert.equal(submit.function.parameters.properties.children.minItems,3);assert.equal(submit.function.parameters.properties.children.maxItems,3);
+  return sseMessage([{name:'submit_branches',args:{children:solutionNotes}}]);
+ };
+ try{
+  const result=await runPiAgent({connection,job:{...job,mode:'solutions'},skills:fastSkills,hub,skillLoader:async s=>{loads++;return s.content;}});
+  assert.equal(result.agent.modelCalls,2);assert.equal(loads,1);assert.deepEqual(result.agent.selectedSkills.map(s=>s.id),['game-id']);assert.equal(result.agent.toolFailures,0);
+  assert.match(result.children[0].note,/【适用条件与代价】/);assert.match(result.children[0].note,/【验收方式】/);
+ }finally{globalThis.fetch=saved;}
+});
+test('repeated Skill IDs or unique names reuse loaded content and then narrow the workflow to submission',async()=>{
+ const saved=globalThis.fetch,requests=[],events=[];let loads=0;
+ const script=[[{name:'read_node_context',args:{}},{name:'read_skill',args:{id:'game-id'}}],[{name:'read_skill',args:{id:'游戏策划'}},{name:'read_skill',args:{id:'game-id'}}],[{name:'submit_branches',args:{children:solutionNotes}}]];
+ globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+ try{
+  const result=await runPiAgent({connection,job:{...job,mode:'solutions'},skills:fastSkills,hub,emit:e=>events.push(e),skillLoader:async s=>{loads++;return s.content;}});
+  assert.equal(loads,1);assert.equal(result.agent.selectedSkills.length,1);assert.equal(events.filter(e=>e.type==='skill_cache').length,2);assert.ok(!requests[2].tools.some(t=>t.function.name==='read_skill'));
+ }finally{globalThis.fetch=saved;}
+});
+test('output repairs keep the relevant Skill loaded and cannot send the model back to method rereads',async()=>{
+ const saved=globalThis.fetch,requests=[];let loads=0;
+ const invalid=solutionNotes.map(c=>({...c,note:'【行动步骤】先测试卡牌资源曲线和策略收益，记录当前约束与变化，收集真实对局证据后再进行后续修订。'}));
+ const script=[[{name:'read_node_context',args:{}},{name:'read_skill',args:{id:'game-id'}}],[{name:'submit_branches',args:{children:invalid}}],[{name:'submit_branches',args:{children:solutionNotes}}]];
+ globalThis.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return sseMessage(script.shift());};
+ try{
+  const result=await runPiAgent({connection,job:{...job,mode:'solutions'},skills:fastSkills,hub,skillLoader:async s=>{loads++;return s.content;}});
+  assert.equal(loads,1);assert.equal(result.agent.modelCalls,3);assert.ok(!requests[2].tools.some(t=>t.function.name==='read_skill'));assert.ok(requests[2].messages.some(m=>m.role==='tool'&&m.content.includes('conditionsAndCosts')));
  }finally{globalThis.fetch=saved;}
 });

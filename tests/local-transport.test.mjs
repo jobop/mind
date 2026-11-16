@@ -29,8 +29,7 @@ test('local server streams progress before completion and runs the actual Pi SDK
       { name: 'plan_work', args: { steps: ['读取节点与方法', '校验并提交分支'] } },
       { name: 'read_node_context', args: {} }, { name: 'read_skill', args: {} },
     ])); });
-    if (modelCalls === 3) return sseMessage([{ name: 'validate_branches', args: { children } }]);
-    if (modelCalls === 4) return sseMessage([{ name: 'submit_branches', args: { children } }]);
+    if (modelCalls === 3) return sseMessage([{ name: 'submit_branches', args: { children } }]);
     throw Error('Unexpected provider request');
   };
   try {
@@ -52,8 +51,8 @@ test('local server streams progress before completion and runs the actual Pi SDK
     const events = text.trim().split('\n').map(line => JSON.parse(line));
     assert.ok(events.some(e => e.type === 'tool_start' && e.tool === 'read_skill'));
     const result = events.find(e => e.type === 'result').result;
-    assert.equal(result.agent.framework, 'pi-agent-core'); assert.equal(result.agent.modelCalls, 3);
-    assert.equal(result.children.length, 3); assert.equal(modelCalls, 4);
+    assert.equal(result.agent.framework, 'pi-agent-core'); assert.equal(result.agent.modelCalls, 2);
+    assert.equal(result.children.length, 3); assert.equal(modelCalls, 3);
   } finally {
     globalThis.fetch = nativeFetch; server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }

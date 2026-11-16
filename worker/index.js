@@ -178,7 +178,7 @@ function parseBranches(content, quantity, existing) {
 }
 async function route(request, env) {
   const path = new URL(request.url).pathname;
-  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.3.1', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
+  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.4.0', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
   if (!path.startsWith('/api/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: '不支持的请求方法' }, 405);
     const asset = ASSETS[path === '/index.html' ? '/' : path];
@@ -187,7 +187,7 @@ async function route(request, env) {
   if (env.RESOURCE_SERVICE && /^\/api\/projects\/[^/]+\/(?:resources|git-credentials)(?:\/|$)/.test(path)) return env.RESOURCE_SERVICE.handle(request);
   if (env.PROJECT_SERVICE && (path.startsWith('/api/auth/') || path === '/api/projects' || path.startsWith('/api/projects/'))) return env.PROJECT_SERVICE.handle(request);
   if (path === '/api/config' && request.method === 'GET') {
-    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.3.1', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
+    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.4.0', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
   }
   if (env.PROJECT_SERVICE) env.PROJECT_SERVICE.user(request);
   if (env.GENERATION_JOBS && (path === '/api/generation-jobs' || path.startsWith('/api/generation-jobs/'))) return env.GENERATION_JOBS.handle(request);
