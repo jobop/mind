@@ -301,3 +301,25 @@ test('releasing a long press cannot click through to a menu action, while the ne
  run(`suppressLongPressClick=true;document.dispatchEvent({type:'pointerdown',target:{}});document.dispatchEvent({type:'click',detail:1,preventDefault(){prevented++;},stopImmediatePropagation(){}});`);
  assert.equal(run('prevented'),1);assert.equal(run('suppressLongPressClick'),false);
 });
+
+test('multi-selection sends one grouped request and commits every selected parent in one undo step',async()=>{
+  const {run}=app({maps:[{id:'m',title:'联合主题',root:{id:'r',title:'联合主题',children:[{id:'a',title:'机制',children:[]},{id:'b',title:'美术',children:[]}]}}],active:'m'});
+  run("selectNode('a');selectNode('b',{ctrlKey:true});connection={configured:true,model:'test'};let batchCalls=0;fetch=async(url,options)=>{batchCalls++;const input=JSON.parse(options.body);if(input.targetNodeIds.join(',')!=='a,b')throw Error('Incorrect selection');return {ok:true,json:async()=>({nodes:input.targetNodeIds.map(nodeId=>({nodeId,children:[1,2,3].map(i=>({title:nodeId+'分支'+i,note:'联合生成返回的说明'}))})),model:'test'})};}");
+  assert.equal(run('selectionIds().length'),2);
+  assert.equal(run("requestSnapshot('a').payload.targetNodeIds"),undefined,'Context menu still supports a single target');
+  await run('generate()');
+  assert.equal(run('batchCalls'),1);
+  assert.equal(run("find('a').node.children.length"),3);assert.equal(run("find('b').node.children.length"),3);
+  run("$('undoBtn').onclick()");assert.equal(run('count(map().root)'),3);
+  run("$('redoBtn').onclick()");assert.equal(run('count(map().root)'),9);
+  run("$('clearSelection').onclick()");assert.equal(run('selectionIds().length'),0);assert.equal(run("$('generateBtn').disabled"),true);
+  run("$('exitSelection').onclick()");assert.equal(run('selectionIds().length'),1);
+});
+test('mobile multi-select toggles membership, limits ten targets and resets on map changes',()=>{
+  const {run}=app();
+  run("map().root.children=Array.from({length:12},(_,i)=>({id:'child'+i,title:'目标'+i,children:[]}));$('multiSelectBtn').onclick();for(let i=0;i<12;i++)selectNode('child'+i)");
+  assert.equal(run('selectionIds().length'),10);
+  run("selectNode('child0')");assert.equal(run('selectionIds().length'),9);
+  run("workspace.maps.push({id:'other',title:'其他导图',root:{id:'otherRoot',title:'其他',children:[]}});switchMap('other')");
+  assert.equal(run('multiSelect'),false);assert.equal(run('selectionIds()[0]'),'otherRoot');
+});

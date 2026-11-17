@@ -71,3 +71,37 @@ test('authenticated HTTP generation returns immediately and stores completed nod
     assert.equal(s.projects.get(s.req('/'),s.project.id).workspace.maps[0].root.children.length,3);
   }finally{s.projects.close();}
 });
+
+async function batchSetup(){
+  const s=await setup();const data=JSON.parse(s.projects.db.prepare('SELECT data FROM projects WHERE id=?').get(s.project.id).data);
+  data.workspace.maps[0].root.children=[{id:'a',title:'玩法',children:[]},{id:'b',title:'画面',children:[]}];
+  s.projects.db.prepare('UPDATE projects SET data=? WHERE id=?').run(JSON.stringify(data),s.project.id);
+  s.input={...s.input,nodeId:'a',targetNodeIds:['a','b']};
+  s.result={...s.result,nodes:['a','b'].map(nodeId=>({nodeId,children:s.result.children}))};delete s.result.children;
+  return s;
+}
+test('one HTTP task expands multiple parents atomically and duplicate delivery never starts another Agent',async()=>{
+  const s=await batchSetup();let calls=0;
+  const env={PROJECT_SERVICE:s.projects,GENERATION_JOBS:s.jobs,CONNECTION_ENCRYPTION_KEY:'test-encryption-key-over-thirty-two-characters',AGENT_TEST:async()=>{},AGENT_RUNNER:async({job})=>{calls++;assert.deepEqual(job.targets.map(n=>n.id),['a','b']);assert.equal(job.mapContext.totalNodes,3);return s.result;}};
+  try{
+    const connect=await worker.fetch(s.req('/api/connection',{base:'https://api.vendor.com/v1',model:'model',key:'test-not-real-key'}),env);
+    const headers={Cookie:s.req('/').headers.get('Cookie')+'; '+connect.headers.get('Set-Cookie').split(';')[0]};
+    const response=await worker.fetch(s.req('/api/generate',s.input,headers),env);assert.equal(response.status,202);const task=await response.json();
+    const done=await waitTerminal(s.jobs,s.req,task.id);assert.equal(done.status,'succeeded');assert.equal(calls,1);
+    const project=s.projects.get(s.req('/'),s.project.id);assert.equal(project.revision,2);assert.deepEqual(project.workspace.maps[0].root.children.map(n=>n.children.length),[3,3]);
+    assert.deepEqual(project.workspace.maps[0].agentRuns[0].nodeIds,['a','b']);
+    const again=await worker.fetch(s.req('/api/generate',s.input,headers),env);assert.equal((await again.json()).id,task.id);assert.equal(calls,1);
+    const invalid=await worker.fetch(s.req('/api/generate',{...s.input,clientRequestId:randomUUID(),targetNodeIds:['a','foreign']},headers),env);assert.equal(invalid.status,400);assert.equal(calls,1);
+  }finally{s.projects.close();}
+});
+test('an invalid group rolls back every parent and a missing target cannot cause partial saves',async()=>{
+  for(const failure of ['invalid','deleted']){
+    const s=await batchSetup();
+    try{
+      if(failure==='invalid')s.result.nodes[1].children=[];
+      else {const row=s.projects.db.prepare('SELECT data FROM projects WHERE id=?').get(s.project.id),data=JSON.parse(row.data);data.workspace.maps[0].root.children.pop();s.projects.db.prepare('UPDATE projects SET data=? WHERE id=?').run(JSON.stringify(data),s.project.id);}
+      const task=await s.jobs.start(s.req('/api/generate',s.input),s.input,async()=>s.result).json();assert.equal((await waitTerminal(s.jobs,s.req,task.id)).status,'failed');
+      const project=s.projects.get(s.req('/'),s.project.id);assert.equal(project.revision,1);assert.equal(project.workspace.maps[0].root.children[0].children.length,0);
+    }finally{s.projects.close();}
+  }
+});

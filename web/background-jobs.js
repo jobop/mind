@@ -61,7 +61,9 @@ async function recoverProjectGeneration() {
     busy=false;
     if(active){
       if(!workspace.maps.some(m=>m.id===active.mapId))return;
-      workspace.active=active.mapId;selected=active.nodeId;render();
+      workspace.active=active.mapId;selected=active.nodeId;selectionIds();
+      if(active.input.targetNodeIds){multiSelect=true;selectedNodes=new Set(active.input.targetNodeIds);}
+      render();
       toast('正在恢复后台任务，不会重复调用模型');
       // The server already owns this task; reconnect without requiring a fresh model credential.
       void generate({mapId:active.mapId,nodeId:active.nodeId,payload:active.input},active);
@@ -76,8 +78,8 @@ async function recoverProjectGeneration() {
       const task=await api('/api/generation-jobs/'+latest.id);
       if(projectSession.project?.id!==projectId)return;
       const steps=(task.events||[]).map(event=>({type:event.type,id:event.id,tool:event.tool,failed:event.type==='tool_end'&&!event.ok,text:agentEventText(event)})).filter(event=>event.text);
-      currentAttempt={id:'job:'+task.id,mapId:task.mapId,nodeId:task.nodeId,status:task.status==='cancelled'?'已取消':'本次未完成',steps,sources:[]};
-      generationNotice={mapId:task.mapId,nodeId:task.nodeId,state:'error',text:task.error?.message||'上次任务未完成，原有导图保留'};
+      currentAttempt={id:'job:'+task.id,mapId:task.mapId,nodeId:task.nodeId,nodeIds:task.input.targetNodeIds||[task.nodeId],status:task.status==='cancelled'?'已取消':'本次未完成',steps,sources:[]};
+      generationNotice={mapId:task.mapId,nodeId:task.nodeId,nodeIds:task.input.targetNodeIds||[task.nodeId],state:'error',text:task.error?.message||'上次任务未完成，原有导图保留'};
       agentTraceMapId=null;
       const input={...task.input};delete input.clientRequestId;
       failedRequest={mapId:task.mapId,nodeId:task.nodeId,payload:input,error:generationNotice.text};

@@ -21,7 +21,7 @@ export class GenerationJobs {
   start(request,input,execute) {
     const user=this.projects.user(request), clientId=input.clientRequestId;
     if(!uuid(clientId))throw new ProjectError('任务请求 ID 格式不正确');
-    input=Object.fromEntries(['clientRequestId','projectId','mapId','nodeId','topic','title','note','instruction','brief','ancestorNotes','ancestors','existing','mode','quantity','providedSources'].filter(key=>input[key]!==undefined).map(key=>[key,input[key]]));
+    input=Object.fromEntries(['clientRequestId','projectId','mapId','nodeId','topic','title','note','instruction','brief','ancestorNotes','ancestors','existing','mode','quantity','providedSources','targetNodeIds'].filter(key=>input[key]!==undefined).map(key=>[key,input[key]]));
     const serialized=JSON.stringify(input),digest=createHash('sha256').update(serialized).digest('hex');
     const prior=this.db.prepare('SELECT * FROM generation_jobs WHERE owner_id=? AND client_id=?').get(user.id,clientId);
     if(prior){if(prior.input_hash!==digest)throw new ProjectError('同一任务请求不能替换生成内容',409,'TASK_INPUT_CHANGED');return json(this.view(prior),200);}
@@ -70,19 +70,25 @@ export class GenerationJobs {
       if(!job||terminal.has(job.status)){this.db.exec('ROLLBACK');return;}
       const row=this.db.prepare('SELECT data,revision FROM projects WHERE id=? AND owner_id=?').get(job.project_id,job.owner_id);
       if(!row)throw new ProjectError('项目已删除，未写入生成结果',409,'TARGET_CHANGED');
-      const project=JSON.parse(row.data),map=project.workspace.maps.find(m=>m.id===job.map_id),target=map&&findNode(map.root,job.node_id);
-      if(!target)throw new ProjectError('目标节点已删除，未写入生成结果',409,'TARGET_CHANGED');
-      const names=new Set(target.children.map(n=>n.title.trim().toLowerCase()));
-      if(result.children.some(c=>names.has(c.title.trim().toLowerCase())))throw new ProjectError('目标节点已有同名分支，请检查导图后再生成',409,'TARGET_CHANGED');
-      const input=JSON.parse(job.input_json),nodeIds=[];
-      const children=result.children.map(c=>{
-        const nodeId=randomUUID();nodeIds.push(nodeId);
-        return {id:nodeId,title:c.title.trim(),note:c.note,children:[],generated:{model:result.model,at:result.generatedAt,direction:input.mode,skill:result.skill||null,skills:result.skills||[],sources:result.agent?.sources||[],generationJobId:id,agent:result.agent?{framework:result.agent.framework,version:result.agent.version,runId:result.agent.runId,modelCalls:result.agent.modelCalls,toolCalls:result.agent.toolCalls}:null}};
-      });
-      target.children.push(...children);target.collapsed=false;map.updated=Date.now();
-      map.agentRuns=[{...result.agent,jobId:id,nodeId:job.node_id,status:'succeeded',at:result.generatedAt,model:result.model,steps:events},...(map.agentRuns||[])].slice(0,10);
+      const project=JSON.parse(row.data),map=project.workspace.maps.find(m=>m.id===job.map_id),input=JSON.parse(job.input_json);
+      const targetIds=input.targetNodeIds||[job.node_id],groups=input.targetNodeIds?result.nodes:[{nodeId:job.node_id,children:result.children}];
+      if(!map||!Array.isArray(groups)||groups.length!==targetIds.length||new Set(groups.map(g=>g.nodeId)).size!==targetIds.length)throw new ProjectError('联合生成的目标分组不完整，未保存任何分支',409,'TARGET_CHANGED');
+      const nodeIds=[];
+      for(const group of groups){
+        if(!targetIds.includes(group.nodeId))throw new ProjectError('输出包含未选择的节点',409,'TARGET_CHANGED');
+        const target=findNode(map.root,group.nodeId);if(!target)throw new ProjectError('选中的目标节点已删除，未保存任何分支',409,'TARGET_CHANGED');
+        if(!Array.isArray(group.children)||group.children.length!==input.quantity)throw new ProjectError('目标分支数量不完整，未保存任何分支',409,'TARGET_CHANGED');
+        const names=new Set(target.children.map(n=>n.title.trim().toLowerCase()));
+        if(group.children.some(c=>names.has(c.title.trim().toLowerCase())))throw new ProjectError('目标节点已有同名分支，未写入本次结果',409,'TARGET_CHANGED');
+        const children=group.children.map(c=>{
+          const nodeId=randomUUID();nodeIds.push(nodeId);
+          return {id:nodeId,title:c.title.trim(),note:c.note,children:[],generated:{model:result.model,at:result.generatedAt,direction:input.mode,skill:result.skill||null,skills:result.skills||[],sources:result.agent?.sources||[],generationJobId:id,agent:result.agent?{framework:result.agent.framework,version:result.agent.version,runId:result.agent.runId,modelCalls:result.agent.modelCalls,toolCalls:result.agent.toolCalls}:null}};
+        });target.children.push(...children);target.collapsed=false;
+      }
+      map.updated=Date.now();
+      map.agentRuns=[{...result.agent,jobId:id,nodeId:job.node_id,nodeIds:targetIds,status:'succeeded',at:result.generatedAt,model:result.model,steps:events},...(map.agentRuns||[])].slice(0,10);
       validateProject(project);
-      const stored={...result,persisted:{jobId:id,projectId:job.project_id,mapId:job.map_id,nodeId:job.node_id,nodeIds,revision:row.revision+1}};
+      const stored={...result,persisted:{jobId:id,projectId:job.project_id,mapId:job.map_id,nodeId:job.node_id,targetNodeIds:targetIds,nodeIds,revision:row.revision+1}};
       this.db.prepare('UPDATE projects SET data=?,revision=revision+1,updated=? WHERE id=? AND owner_id=?').run(JSON.stringify(project),Date.now(),job.project_id,job.owner_id);
       this.db.prepare("UPDATE generation_jobs SET status='succeeded',result=?,updated=? WHERE id=?").run(JSON.stringify(stored),Date.now(),id);
       this.db.exec('COMMIT');

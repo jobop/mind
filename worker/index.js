@@ -178,7 +178,7 @@ function parseBranches(content, quantity, existing) {
 }
 async function route(request, env) {
   const path = new URL(request.url).pathname;
-  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.4.0', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
+  if (path === '/healthz' && ['GET','HEAD'].includes(request.method)) return json({ status: 'ok', version: '3.5.0', agent: typeof env.AGENT_RUNNER === 'function', release: env.RELEASE_SHA || null, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED } }, typeof env.AGENT_RUNNER === 'function' ? 200 : 503);
   if (!path.startsWith('/api/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: '不支持的请求方法' }, 405);
     const asset = ASSETS[path === '/index.html' ? '/' : path];
@@ -187,7 +187,7 @@ async function route(request, env) {
   if (env.RESOURCE_SERVICE && /^\/api\/projects\/[^/]+\/(?:resources|git-credentials)(?:\/|$)/.test(path)) return env.RESOURCE_SERVICE.handle(request);
   if (env.PROJECT_SERVICE && (path.startsWith('/api/auth/') || path === '/api/projects' || path.startsWith('/api/projects/'))) return env.PROJECT_SERVICE.handle(request);
   if (path === '/api/config' && request.method === 'GET') {
-    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.4.0', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
+    return json({ ...publicConnection(await connection(request, env, false)), user: env.PROJECT_SERVICE?.user(request, false) || null, projectsEnabled: !!env.PROJECT_SERVICE, backgroundJobs: !!env.GENERATION_JOBS, sandbox: { provider: 'e2b', configured: !!env.SANDBOX_CONFIGURED }, version: '3.5.0', agent: { available: typeof env.AGENT_RUNNER === 'function', framework: 'pi-agent-core', version: '1.5.2' }, canSave: typeof env.CONNECTION_ENCRYPTION_KEY === 'string' && env.CONNECTION_ENCRYPTION_KEY.length >= 32 });
   }
   if (env.PROJECT_SERVICE) env.PROJECT_SERVICE.user(request);
   if (env.GENERATION_JOBS && (path === '/api/generation-jobs' || path.startsWith('/api/generation-jobs/'))) return env.GENERATION_JOBS.handle(request);
@@ -266,7 +266,13 @@ async function route(request, env) {
     const providedSources = input.providedSources ?? [];
     if (!Array.isArray(providedSources) || providedSources.length > 5 || providedSources.some(s => !s || typeof s.url !== 'string' || s.url.length > 2000 || typeof s.title !== 'string' || s.title.length > 200)) throw new AppError('参考来源格式不正确');
     const mapContext = project && input.mapId && input.nodeId ? env.PROJECT_SERVICE.mapContext(project,input.mapId,input.nodeId) : null;
-    const job = { topic: mapContext?.rootTitle || topic, title: mapContext?.target.title || title, note: mapContext?.target.note || note, mapContext, brief, instruction, mode: input.mode, quantity: input.quantity, existing: input.existing, ancestors: input.ancestors, ancestorContext: input.ancestors.map((name, i) => ({ title: name, note: (ancestorNotes[i] || '').slice(0, 400) })).slice(-8), providedSources };
+    let targets;
+    if(input.targetNodeIds!==undefined){
+      if(!project||!mapContext||!Array.isArray(input.targetNodeIds)||input.targetNodeIds.length<2||input.targetNodeIds.length>10||new Set(input.targetNodeIds).size!==input.targetNodeIds.length||!input.targetNodeIds.includes(input.nodeId))throw new AppError('联合生成需选择同一导图中的 2–10 个不同节点');
+      targets=input.targetNodeIds.map(id=>mapContext.nodes.find(n=>n.id===id));
+      if(targets.some(n=>!n||n.path.length>=20||n.children.length+input.quantity>200)||mapContext.totalNodes+targets.length*input.quantity>2000)throw new AppError('选中节点不存在或生成后会超过导图层级、数量上限');
+    }
+    const job = { topic: mapContext?.rootTitle || topic, title: mapContext?.target.title || title, note: mapContext?.target.note || note, mapContext, targets, brief, instruction, mode: input.mode, quantity: input.quantity, existing: input.existing, ancestors: input.ancestors, ancestorContext: input.ancestors.map((name, i) => ({ title: name, note: (ancestorNotes[i] || '').slice(0, 400) })).slice(-8), providedSources };
     const managed = !!env.GENERATION_JOBS && !!input.clientRequestId;
     const release = managed ? () => {} : acquire(request, env);
     const controller = new AbortController();
@@ -285,9 +291,13 @@ async function route(request, env) {
     async function execute(emit) {
       const result = await env.AGENT_RUNNER({ connection: c, job: { ...job, project: project ? { id: project.id, name: project.name } : null }, skill, skills: projectSkills, signal, hub, emit });
       if (signal.aborted) throw new AppError('Agent 已取消', 499, 'CANCELLED');
-      const children = parseBranches(JSON.stringify({ children: result.children }), input.quantity, input.existing);
+      let output;
+      if(targets){
+        if(!Array.isArray(result.nodes)||result.nodes.length!==targets.length||new Set(result.nodes.map(n=>n.nodeId)).size!==targets.length)throw new AppError('联合生成返回的目标分组不完整',502,'INVALID_AGENT_RESULT');
+        output={nodes:result.nodes.map(group=>{const target=targets.find(n=>n.id===group.nodeId);if(!target)throw new AppError('模型返回了未选中的节点',502,'INVALID_AGENT_RESULT');return {nodeId:target.id,children:parseBranches(JSON.stringify({children:group.children}),input.quantity,target.children.map(n=>n.title))};})};
+      }else output={children:parseBranches(JSON.stringify({ children: result.children }), input.quantity, input.existing)};
       if (!result.agent || result.agent.framework !== 'pi-agent-core') throw new AppError('Agent 运行结果缺少框架信息', 502, 'INVALID_AGENT_RESULT');
-      return { ...result, children };
+      return { ...result, ...output };
     }
     if (managed) {
       return env.GENERATION_JOBS.start(request, input, async (emit, jobSignal) => {

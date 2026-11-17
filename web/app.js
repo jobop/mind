@@ -60,6 +60,7 @@ if (!workspace) { const m = newMap(); workspace = { maps: [m], active: m.id }; }
 // Previous browser-direct model credentials are no longer used.
 try { sessionStorage.removeItem('branch-ai-key'); localStorage.removeItem('branch-ai-config-v1'); } catch {}
 let selected = map().root.id, mode = 'questions', view = 'map';
+let multiSelect=false,selectedNodes=new Set(),selectionMap=null,selectionProject=null;
 let zoom = 1, pan = { x: 0, y: 0 }, layout = new Map(), history = [], future = [];
 let busy = false, generation = null, failedRequest = null, editAction = 'edit', editTarget = null;
 let agentEvents = [], agentTraceMapId = null, agentTraceRunId = null;
@@ -121,8 +122,30 @@ function switchMap(id) {
   failedRequest = null;
   commit(); fit();
 }
+function selectionIds(){
+  if(selectionMap!==map().id||selectionProject!==(projectSession.project?.id||null)){selectedNodes.clear();multiSelect=false;selectionMap=map().id;selectionProject=projectSession.project?.id||null;}
+  for(const id of selectedNodes)if(!find(id))selectedNodes.delete(id);
+  return multiSelect?[...selectedNodes]:[selected];
+}
+function selectNode(id,event={}){
+  selectionIds();
+  if(!busy&&(multiSelect||event.ctrlKey||event.metaKey||event.shiftKey)){
+    if(!multiSelect){multiSelect=true;selectedNodes.add(selected);}
+    if(selectedNodes.has(id))selectedNodes.delete(id);else if(selectedNodes.size<10)selectedNodes.add(id);else return toast('一次最多联合生成 10 个节点');
+  }else if(!busy){multiSelect=false;selectedNodes.clear();}
+  selected=id;draw();renderInspector();renderOutline();
+}
+function renderSelection(){
+  const ids=selectionIds();
+  $('multiSelectBtn').textContent=multiSelect?'☑ 多选中':'☑ 多选';$('multiSelectBtn').setAttribute('aria-pressed',String(multiSelect));$('multiSelectBtn').disabled=busy;
+  $('selectionControls').hidden=!multiSelect;$('selectionCount').textContent='已选 '+ids.length+' / 10 个节点 · 一次联合生成';
+  $('clearSelection').disabled=busy;$('exitSelection').disabled=busy;
+}
+$('multiSelectBtn').onclick=()=>{if(busy)return;selectionIds();multiSelect=!multiSelect;selectedNodes.clear();if(multiSelect)selectedNodes.add(selected);draw();renderInspector();renderOutline();};
+$('clearSelection').onclick=()=>{if(!busy){selectedNodes.clear();draw();renderInspector();renderOutline();}};
+$('exitSelection').onclick=()=>{if(!busy){multiSelect=false;selectedNodes.clear();draw();renderInspector();renderOutline();}};
 function render() {
-  const m = map();
+  const m = map();selectionIds();
   if (!find(selected)) selected = m.root.id;
   $('headerTitle').textContent = m.title;
   $('mapTitle').textContent = m.title;
@@ -180,20 +203,21 @@ function draw() {
     let top = -nodes.reduce((sum, n) => sum + height(n, 1), 0) / 2;
     nodes.forEach((n, i) => { place(n, side * 210, top, side, 1, index === 0 ? i : i + half); top += heights.get(n.id); });
   });
+  const selectedIds=selectionIds();renderSelection();
   $('nodes').replaceChildren(); $('edges').replaceChildren();
   for (const [id, p] of layout) {
     const n = p.node, button = document.createElement('button'), colors = palette[p.color % palette.length];
     button.className = 'node' + (p.depth === 0 ? ' root' : p.depth > 1 ? ' leaf' : '') +
-      (id === selected ? ' selected' : '') + (n.generated?.model ? ' ai-node' : '') + (generation?.nodeId === id ? ' generating' : '');
+      (id === selected ? ' selected' : '') + (multiSelect&&selectedIds.includes(id)?' multi-selected':'') + (n.generated?.model ? ' ai-node' : '') + (generation?.nodeId === id||generation?.nodeIds?.includes(id) ? ' generating' : '');
     button.style.cssText = `left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;--node-bg:${colors[0]};--node-border:${colors[1]};--node-color:${colors[2]}`;
     button.textContent = n.title; button.title = n.note || n.title;
-    button.setAttribute('aria-pressed', String(id === selected));
+    button.setAttribute('aria-pressed', String(multiSelect?selectedIds.includes(id):id===selected));button.dataset.nodeId=id;
     button.setAttribute('aria-haspopup', 'menu');
     installNodeMenu(button, id);
     if (!p.depth) { const sub = document.createElement('small'); sub.textContent = '让每一个想法，生长出可能'; button.append(sub); }
     if (n.collapsed && n.children.length) { const badge = document.createElement('span'); badge.className = 'collapse-badge'; badge.textContent = '+' + n.children.length; button.append(badge); }
-    button.onclick = event => { event.stopPropagation(); if (consumeLongPress(id)) return; closeContextMenu(); selected = id; draw(); renderInspector(); renderOutline(); };
-    button.ondblclick = event => { event.stopPropagation(); openEdit('edit', id); };
+    button.onclick = event => { event.stopPropagation(); if (consumeLongPress(id)) return; closeContextMenu(); selectNode(id,event); };
+    button.ondblclick = event => { event.stopPropagation(); if(!multiSelect)openEdit('edit', id); };
     $('nodes').append(button);
     if (!n.collapsed) for (const child of n.children) {
       const q = layout.get(child.id); if (!q) continue;
@@ -211,13 +235,14 @@ function renderInspector() {
   const result = find(selected), n = result.node;
   if (typeof renderNodeResourceSummary === 'function') renderNodeResourceSummary(n);
   $('selectedTitle').textContent = n.title;
-  $('selectedKind').textContent = result.parent ? '当前节点' : '中心主题';
+  $('selectedKind').textContent = multiSelect?'联合生成 · 当前查看节点':result.parent ? '当前节点' : '中心主题';
   $('selectedPath').textContent = n.note || (result.parent ? '来自 · ' + result.parent.title : '编辑主题，或直接用 AI 展开想法');
   $('collapseNode').textContent = n.collapsed ? '⊞ 展开分支' : '⊟ 折叠分支';
   $('collapseNode').disabled = !n.children.length || busy;
   $('deleteNode').disabled = !result.parent || busy;
-  $('generateBtn').disabled = busy || connecting;
-  $('generateBtn').textContent = busy ? '✧ Agent 正在执行…' : '✧ Agent 展开下一级 ↗';
+  const selectedIds=selectionIds(),amount=selectedIds.length;renderSelection();
+  $('generateBtn').disabled = busy || connecting || !amount;
+  $('generateBtn').textContent = busy ? '✧ Agent 正在执行…' : amount>1?'✧ 联合展开 '+amount+' 个节点 ↗':'✧ Agent 展开下一级 ↗';
   $('cancelGenerate').hidden = !busy;
   $('addChild').disabled = busy; $('editNode').disabled = busy;
   $('branchCount').disabled = busy; $('instruction').disabled = busy;
@@ -238,12 +263,13 @@ function renderInspector() {
 function renderCanvasGeneration() {
   const n = find(selected)?.node;
   if (!n) return;
-  const notice = generationNotice?.mapId === map().id && (generationNotice.nodeId === selected || busy) ? generationNotice : null;
+  const notice = generationNotice?.mapId === map().id && (generationNotice.nodeId === selected || generationNotice.nodeIds?.includes(selected) || busy) ? generationNotice : null;
   const text = notice?.text || (n.children.length ? '当前节点有 ' + n.children.length + ' 个下级节点，可继续展开' : '点击「展开下一级」，让 Agent 为选中节点生成分支');
   $('canvasGenerationStatus').textContent = text;
   $('canvasGeneration').className = 'canvas-generation' + (notice ? ' is-' + notice.state : '');
-  $('canvasGenerate').disabled = busy || connecting;
-  $('canvasGenerate').textContent = busy ? '正在生成…' : notice?.state === 'error' ? '重试生成' : '✧ 展开下一级';
+  const amount=selectionIds().length;
+  $('canvasGenerate').disabled = busy || connecting || !amount;
+  $('canvasGenerate').textContent = busy ? '正在生成…' : notice?.state === 'error' ? '重试生成' : amount>1?'✧ 联合展开 '+amount+' 个节点':'✧ 展开下一级';
   $('canvasGenerationDetails').hidden = !notice || !['running', 'error'].includes(notice.state);
   $('canvasCancelGeneration').hidden = !busy;
 }
@@ -253,9 +279,9 @@ function renderOutline() {
     const button = document.createElement('button');
     button.textContent = (n.children.length ? n.collapsed ? '▸ ' : '▾ ' : '· ') + n.title;
     button.style.marginLeft = depth * 18 + 'px'; button.style.width = `calc(100% - ${depth * 18}px)`;
-    if (n.id === selected) button.className = 'outline-selected';
-    button.onclick = () => { selected = n.id; draw(); renderInspector(); renderOutline(); };
-    button.ondblclick = () => openEdit('edit', n.id);
+    if (n.id === selected||multiSelect&&selectionIds().includes(n.id)) button.className = 'outline-selected';
+    button.onclick = event => selectNode(n.id,event);
+    button.ondblclick = () => {if(!multiSelect)openEdit('edit',n.id);};
     $('outline').append(button);
     if (!n.collapsed) n.children.forEach(c => walk(c, depth + 1));
   }
@@ -442,13 +468,13 @@ function agentSummary(run, prefix = '完成') {
   return text;
 }
 function restoreAgentView(node) {
-  const pinned = currentAttempt?.mapId === map().id && currentAttempt.nodeId === node.id ? currentAttempt : null;
+  const pinned = currentAttempt?.mapId === map().id && (currentAttempt.nodeId === node.id||currentAttempt.nodeIds?.includes(node.id)) ? currentAttempt : null;
   const requestedRun = node.generated?.agent?.runId;
   if (pinned && agentTraceMapId === map().id && agentTraceRunId === pinned.id) return;
   if (!pinned && agentTraceMapId === map().id && (!requestedRun || requestedRun === agentTraceRunId)) return;
   agentTraceMapId = map().id;
   const runs = Array.isArray(map().agentRuns) ? map().agentRuns : [];
-  const run = pinned || runs.find(r => r.nodeId === node.id) || runs.find(r => r.runId === requestedRun) || (requestedRun ? { ...node.generated.agent, steps: [], sources: node.generated.sources || [] } : runs[0]);
+  const run = pinned || runs.find(r => r.nodeId === node.id||r.nodeIds?.includes(node.id)) || runs.find(r => r.runId === requestedRun) || (requestedRun ? { ...node.generated.agent, steps: [], sources: node.generated.sources || [] } : runs[0]);
   $('agentTrace').replaceChildren(); $('agentSources').replaceChildren(); $('agentPanel').hidden = !run;
   if (!run) { agentTraceRunId = null; return; }
   agentTraceRunId = pinned ? pinned.id : run.runId;
@@ -556,11 +582,12 @@ async function refreshConnection() {
   catch (error) { connection = { configured: false }; toast('模型连接检查失败：' + error.message); }
   renderInspector(); return connection;
 }
-function requestSnapshot() {
-  const n = find(selected).node;
+function requestSnapshot(nodeId) {
+  const ids=nodeId?[nodeId]:selectionIds();if(!ids.length)throw Error('请先选中节点');
+  const n = find(nodeId|| (ids.includes(selected)?selected:ids[0])).node;
   return {
     mapId: map().id, nodeId: n.id,
-    payload: { projectId: projectSession.project?.id, topic: map().root.title, brief: map().brief || '', skill: clone(map().skill || { id: 'general' }), title: n.title, note: n.note || '', ancestors: ancestors(n.id), ancestorNotes: ancestorNotes(n.id),
+    payload: { projectId: projectSession.project?.id, ...(ids.length>1?{targetNodeIds:ids}:{}), topic: map().root.title, brief: map().brief || '', skill: clone(map().skill || { id: 'general' }), title: n.title, note: n.note || '', ancestors: ancestors(n.id), ancestorNotes: ancestorNotes(n.id),
       providedSources: (n.generated?.sources || []).slice(0, 5).map(s => ({ url: s.url, title: s.title })), existing: n.children.map(c => c.title), mode, quantity: Number($('branchCount').value), instruction: $('instruction').value.trim() },
   };
 }
@@ -569,11 +596,14 @@ async function generate(snapshot, resumeTask) {
   if (projectSession.ready && !projectSession.user) { openAccount(); return toast('请先登录，并选择属于你的项目'); }
   if (projectSession.ready && !projectSession.project) return toast('请先创建或选择项目');
   if (!connection.configured && !resumeTask) { toast('先连接你的模型，就可以开始生成'); openSettings(); return; }
+  if(!snapshot&&!selectionIds().length)return toast('请先点选需要生成的节点');
   const job = snapshot || requestSnapshot();
+  const targetIds=job.payload.targetNodeIds||[job.nodeId];
   let targetMap = workspace.maps.find(m => m.id === job.mapId);
   let target = targetMap && find(job.nodeId, targetMap.root)?.node;
   if (!target || map().id !== job.mapId) return toast('目标节点已变化，请重新选择节点生成');
-  if (!resumeTask && !canAdd(target, job.payload.quantity)) return;
+  if(!targetIds.every(id=>find(id,targetMap.root)))return toast('部分选中节点已变化，请重新选择');
+  if (!resumeTask && (!targetIds.every(id=>canAdd(find(id,targetMap.root).node,job.payload.quantity))||count(targetMap.root)+targetIds.length*job.payload.quantity>2000)) return toast('生成后会超过导图或节点数量上限');
   // A retry keeps the original target, instruction and direction, while honoring current siblings.
   if (!job.payload.clientRequestId) job.payload.existing = target.children.map(c => c.title);
   if (connection.backgroundJobs && job.payload.projectId || resumeTask) {
@@ -581,12 +611,12 @@ async function generate(snapshot, resumeTask) {
     job.payload.mapId = job.mapId; job.payload.nodeId = job.nodeId;
   }
   busy = true; failedRequest = null; agentEvents = [];
-  generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'running', text: '正在保存项目并准备生成…' };
-  currentAttempt = { id: job.payload.clientRequestId || uid(), mapId: job.mapId, nodeId: job.nodeId, status: '连接中', steps: [], sources: [] };
+  generationNotice = { mapId: job.mapId, nodeId: job.nodeId, nodeIds:targetIds,state: 'running', text: '正在保存项目并准备生成…' };
+  currentAttempt = { id: job.payload.clientRequestId || uid(), mapId: job.mapId, nodeId: job.nodeId,nodeIds:targetIds, status: '连接中', steps: [], sources: [] };
   agentTraceMapId = map().id; agentTraceRunId = currentAttempt.id;
   $('agentTrace').replaceChildren(); $('agentSources').replaceChildren(); $('agentPanel').hidden = false; $('agentRunStatus').textContent = '连接中';
   const controller = new AbortController();
-  generation = { ...job, controller, cancelled: false };
+  generation = { ...job,nodeIds:targetIds, controller, cancelled: false };
   const current = generation;
   const timeout = setTimeout(() => controller.abort(), GENERATION_TIMEOUT_MS);
   render();
@@ -594,33 +624,37 @@ async function generate(snapshot, resumeTask) {
     if (projectSession.project) await flushProjectSave();
     const result = await generateWithAgent(job.payload, controller.signal, resumeTask);
     if (current.cancelled || controller.signal.aborted) return;
-    if (!Array.isArray(result.children) || result.children.length !== job.payload.quantity ||
-      result.children.some(c => typeof c.title !== 'string' || !c.title.trim() || c.title.length > 80 || typeof c.note !== 'string' || c.note.length > 3000)) throw Error('服务器返回的节点格式不正确，请重试');
-    const seen = new Set((result.persistedProject ? [] : target.children).map(c => c.title.trim().toLowerCase()));
-    for (const c of result.children) { const key = c.title.trim().toLowerCase(); if (seen.has(key)) throw Error('模型返回了重复分支，请重试'); seen.add(key); }
+    const groups=targetIds.length>1?result.nodes:[{nodeId:job.nodeId,children:result.children}];
+    if(!Array.isArray(groups)||groups.length!==targetIds.length||new Set(groups.map(g=>g.nodeId)).size!==targetIds.length)throw Error('服务器返回的节点分组不完整，请重试');
+    for(const group of groups){
+      if(!targetIds.includes(group.nodeId)||!Array.isArray(group.children)||group.children.length!==job.payload.quantity||group.children.some(c=>typeof c.title!=='string'||!c.title.trim()||c.title.length>80||typeof c.note!=='string'||c.note.length>3000))throw Error('服务器返回的节点格式不正确，请重试');
+      const seen=new Set((result.persistedProject?[]:find(group.nodeId,targetMap.root).node.children).map(c=>c.title.trim().toLowerCase()));
+      for(const c of group.children){const key=c.title.trim().toLowerCase();if(seen.has(key))throw Error('模型返回了重复分支，请重试');seen.add(key);}
+    }
+    const newCount=groups.reduce((sum,g)=>sum+g.children.length,0);
     checkpoint();
     if (result.persistedProject) {
       adoptServerProject(result.persistedProject, job.mapId, job.nodeId);
       targetMap = workspace.maps.find(m => m.id === job.mapId); target = find(job.nodeId, targetMap.root).node;
       $('saveStatus').textContent = '已保存到个人项目';
     } else {
-    target.children.push(...result.children.map(c => ({ id: uid(), title: c.title.trim(), note: c.note, children: [], generated: { skills: result.skills || [], model: result.model, at: result.generatedAt, direction: job.payload.mode, skill: result.skill || null, agent: result.agent ? { framework: result.agent.framework, version: result.agent.version, runId: result.agent.runId, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls } : null, sources: result.agent?.sources || [] } })));
-    target.collapsed = false; selected = target.id;
+    for(const group of groups){const target=find(group.nodeId,targetMap.root).node;target.children.push(...group.children.map(c => ({ id: uid(), title: c.title.trim(), note: c.note, children: [], generated: { skills: result.skills || [], model: result.model, at: result.generatedAt, direction: job.payload.mode, skill: result.skill || null, agent: result.agent ? { framework: result.agent.framework, version: result.agent.version, runId: result.agent.runId, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls } : null, sources: result.agent?.sources || [] } })));
+    target.collapsed = false;}selected=job.nodeId;
     if (result.agent) {
       agentTraceRunId = result.agent.runId;
-      targetMap.agentRuns = [{ runId: result.agent.runId, model: result.model, at: result.generatedAt, plan: result.agent.plan, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls, toolFailures: result.agent.toolFailures, recoveredFailures: result.agent.recoveredFailures, unresolvedFailures: result.agent.unresolvedFailures, selectedSkills: result.agent.selectedSkills || [], usage: result.agent.usage, steps: agentEvents.slice(-80), sources: result.agent.sources }, ...(targetMap.agentRuns || [])].slice(0, 10);
+      targetMap.agentRuns = [{ nodeId:job.nodeId,nodeIds:targetIds,runId: result.agent.runId, model: result.model, at: result.generatedAt, plan: result.agent.plan, modelCalls: result.agent.modelCalls, toolCalls: result.agent.toolCalls, toolFailures: result.agent.toolFailures, recoveredFailures: result.agent.recoveredFailures, unresolvedFailures: result.agent.unresolvedFailures, selectedSkills: result.agent.selectedSkills || [], usage: result.agent.usage, steps: agentEvents.slice(-80), sources: result.agent.sources }, ...(targetMap.agentRuns || [])].slice(0, 10);
       $('agentRunStatus').textContent = agentSummary(result.agent);
       renderAgentSources(result.agent.sources || []);
     }
     }
     if (currentAttempt) { currentAttempt.id = result.agent?.runId || currentAttempt.id; currentAttempt.status = agentSummary(result.agent || {}); currentAttempt.steps = agentEvents; currentAttempt.sources = result.agent?.sources || []; agentTraceRunId = currentAttempt.id; $('agentRunStatus').textContent = currentAttempt.status; renderAgentSources(currentAttempt.sources); }
-    generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'success', text: '已新增 ' + result.children.length + ' 个下级节点 · 当前导图共 ' + count(targetMap.root) + ' 个节点' };
-    if (!result.persistedProject) save(); fitAfterRender = true; toast('已生成 ' + result.children.length + ' 个分支，可点击新节点继续展开');
+    generationNotice = { mapId: job.mapId, nodeId: job.nodeId,nodeIds:targetIds, state: 'success', text: (targetIds.length>1?'已为 '+targetIds.length+' 个节点新增 ':'已新增 ') + newCount + ' 个下级节点 · 当前导图共 ' + count(targetMap.root) + ' 个节点' };
+    if (!result.persistedProject) save(); fitAfterRender = true; toast('已为 '+targetIds.length+' 个节点生成 '+newCount+' 个分支');
   } catch (error) {
     if (current.cancelled || error.code === 'CANCELLED') { generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'idle', text: '已取消生成，原有节点保留' }; $('agentRunStatus').textContent = '已取消'; toast('已取消生成，原有节点已保留'); }
     else {
       const message = error.name === 'AbortError' ? job.payload.clientRequestId ? '页面等待已结束，后台任务可在刷新后恢复，请勿重复创建任务' : '任务等待超时，未收到完整分支，请查看执行记录后重试' : error.isTransportError ? '连接暂时中断，后台任务可在刷新后恢复' : error instanceof TypeError ? '页面处理生成结果时出现异常，请刷新恢复任务' : error.message;
-      generationNotice = { mapId: job.mapId, nodeId: job.nodeId, state: 'error', text: message };
+      generationNotice = { mapId: job.mapId, nodeId: job.nodeId,nodeIds:targetIds, state: 'error', text: message };
       if (currentAttempt) { currentAttempt.status = '本次未完成'; currentAttempt.steps = agentEvents; }
       const retryPayload = { ...job.payload }; if (error.terminal) delete retryPayload.clientRequestId;
       failedRequest = { ...job, payload: retryPayload, error: message }; $('agentRunStatus').textContent = '本次未完成';
@@ -912,8 +946,10 @@ function openContextMenu(event, nodeId = null) {
   }
   function separator() { const line = document.createElement('div'); line.className = 'menu-separator'; line.setAttribute('role', 'separator'); menu.append(line); }
   if (result) {
-    item('✧ 生成子问题', () => { chooseDirection('questions'); generate(); }, busy || connecting);
-    item('◇ 生成解决方案', () => { chooseDirection('solutions'); generate(); }, busy || connecting);
+    item(multiSelect&&selectedNodes.has(nodeId)?'☑ 移出多选':'☐ 加入多选',()=>{if(!multiSelect){multiSelect=true;selectedNodes.clear();}selectNode(nodeId);},busy);
+    if(selectionIds().length>1)item('✧ 联合生成已选 '+selectionIds().length+' 个节点',()=>generate(),busy||connecting);
+    item('✧ 生成子问题', () => { chooseDirection('questions'); generate(requestSnapshot(nodeId)); }, busy || connecting);
+    item('◇ 生成解决方案', () => { chooseDirection('solutions'); generate(requestSnapshot(nodeId)); }, busy || connecting);
     separator();
     item('＋ 添加子节点', () => openEdit('child', nodeId), busy);
     item('✎ 编辑节点', () => openEdit('edit', nodeId), busy);

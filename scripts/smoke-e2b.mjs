@@ -15,7 +15,7 @@ if (key && !key.startsWith('e2b_')) { console.error('E2B_API_KEY is set, but eve
 if (!key) throw Error('Set platform E2B_API_KEY to run the live sandbox test.');
 const taskIds = [];
 async function task(marker) {
-  const referenceId='reference-'+marker,repoId='repo-'+marker;
+  const referenceId='reference-'+marker,repoId='repo-'+marker,batch=marker==='isolated-beta';
   let injectedTimeout=false;
   const image='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
   let sawReference=false,sawImage=false;
@@ -27,12 +27,12 @@ async function task(marker) {
     [{name:'read_skill',args:{id:'method'}}],
     [{name:'read_public_page',args:{url:'https://example.org/blocked'}},{name:'read_reference',args:{id:referenceId}},...Array.from({length:10},(_,i)=>({name:'read_reference',args:{id:repoId,path:'file-'+i+'.md'}})),{name:'read_reference',args:{id:referenceId}}],
     [{name:'run_command',args:{command:'python3 ' + directory + '/scripts/check.py'}}],
-    [{name:'submit_branches',args:{children}}],
+    [{name:'submit_branches',args:batch?{nodes:['root','other'].map(nodeId=>({nodeId,children}))}:{children}}],
   ];
   let sawCommandOutput = false;
   const events = [];
   const result = await runE2BAgent({ apiKey:key, template:process.env.E2B_TEMPLATE_ID || '', runtimeArchive:resolve(process.env.SANDBOX_RUNTIME_ARCHIVE || (existsSync('.release/stage/sandbox-runtime.tar.gz') ? '.release/stage/sandbox-runtime.tar.gz' : 'sandbox-runtime.tar.gz')), connection:{url:'https://api.vendor.com/v1/chat/completions',model:'tool-capable-model',key:'not-a-paid-key',maxOutputTokens:expectedOutputBudget,visionEnabled:true},
-    job:{mapContext:buildMapContext({workspace:{maps:[{id:'map',title:'全局上下文',root:{id:'root',title:'目标主题',resources:[{id:referenceId,name:marker+'图片',type:'image',url:'https://example.org/image.png',description:marker},{id:repoId,name:marker+'仓库',type:'git',url:'https://github.com/team/game',description:marker}],children:[{id:'other',title:'另一个分支的约束',note:'全局规则',children:[]}]}}]}},'map','root'),project:{id:'smoke-'+marker,name:marker},topic:'任务隔离验证',title:'隔离边界',brief:'控制响应验证',note:'',instruction:'',ancestors:[],ancestorContext:[],existing:[],mode:'questions',quantity:3},
+    job:{mapContext:buildMapContext({workspace:{maps:[{id:'map',title:'全局上下文',root:{id:'root',title:'目标主题',resources:[{id:referenceId,name:marker+'图片',type:'image',url:'https://example.org/image.png',description:marker},{id:repoId,name:marker+'仓库',type:'git',url:'https://github.com/team/game',description:marker}],children:[{id:'other',title:'另一个分支的约束',note:'全局规则',children:[]}]}}]}},'map','root'),...(batch?{targets:[{id:'root',title:'目标主题',children:[{id:'other',title:'另一个分支的约束'}]},{id:'other',title:'另一个分支的约束',note:'全局规则',children:[]}]}:{}),project:{id:'smoke-'+marker,name:marker},topic:'任务隔离验证',title:'隔离边界',brief:'控制响应验证',note:'',instruction:'',ancestors:[],ancestorContext:[],existing:[],mode:'questions',quantity:3},
     skills:[{id:'method',name:'隔离验证方法',version:'1',description:'执行本地检查',content:'# 隔离验证\n读取 scripts/check.py 并执行，不能编造验证结果。',directory,files:[{path:'SKILL.md',base64:Buffer.from('# 隔离验证\n执行本地检查').toString('base64'),sha256:createHash('sha256').update('# 隔离验证\n执行本地检查').digest('hex')},{path:'scripts/check.py',base64:file.toString('base64'),sha256:createHash('sha256').update(file).digest('hex')}]}],
     sandboxFactory:async options=>{try{return await Sandbox.create(options);}catch(error){
       const message=String(error.message || '').split(key).join('[redacted]').replace(/e2b_[a-zA-Z0-9_-]+/g,'[redacted]');
@@ -43,7 +43,7 @@ async function task(marker) {
     referenceReader:async(id,options)=>{if(id===repoId)return {title:options.path,url:'https://github.com/team/game',text:marker+' '+options.path};assert.equal(id,referenceId);sawReference=true;return {title:marker+'图片',url:'https://example.org/image.png',description:marker,image:{data:image,mimeType:'image/png'}};},
     modelProxy:async(connection,raw,signal,onStream)=>{const body=JSON.parse(raw);assert.equal(body.max_tokens,expectedOutputBudget);if(JSON.stringify(body.messages).includes('data:image/png;base64,'+image))sawImage=true;if(body.messages.some(m=>{if(m.role!=='tool')return false;try{return JSON.parse(m.content).output?.trim()===marker;}catch{return false;}}))sawCommandOutput=true;if(sawCommandOutput&&!injectedTimeout){injectedTimeout=true;throw new ModelTransportError('AGENT_MODEL_IDLE_TIMEOUT','模拟上游模型流中断');}const calls=script.shift();assert.ok(calls,'Unexpected model request');const response=sseMessage(calls);const bytes=Buffer.from(await response.text());await onStream({type:'start',status:200,contentType:'text/event-stream'});for(let offset=0;offset<bytes.length;offset+=512)await onStream({type:'chunk',data:bytes.subarray(offset,offset+512)});return {status:200,contentType:'text/event-stream',streamed:true};},
   });
-  assert.equal(result.children.length,3);assert.equal(result.agent.sandbox.provider,'e2b');assert.equal(result.agent.selectedSkills[0].id,'method');
+  if(batch){assert.deepEqual(result.nodes.map(n=>n.nodeId),['root','other']);assert.ok(result.nodes.every(n=>n.children.length===3));assert.equal(result.children,undefined);}else assert.equal(result.children.length,3);assert.equal(result.agent.sandbox.provider,'e2b');assert.equal(result.agent.selectedSkills[0].id,'method');
   assert.ok(events.some(e=>e.type==='tool_end'&&e.tool==='read_public_page'&&!e.ok&&/403/.test(e.reason)),'Safe webpage HTTP cause must cross the real sandbox bridge');
   assert.equal(result.agent.referenceReads,11);assert.equal(result.agent.modelRetries,1);assert.ok(events.some(e=>e.type==='model_retry'));assert.ok(events.some(e=>e.type==='reference_cache'));
   assert.equal(sawReference,true);assert.equal(sawImage,true,'Reference image must reach the real Pi model request');
@@ -62,7 +62,7 @@ try {
     try { await Sandbox.getInfo(id,{apiKey:key,requestTimeoutMs:10000}); throw Error('Sandbox remains after completion'); }
     catch(error){if(!(error instanceof NotFoundError))throw error;}
   }
-  console.log('Verified two distinct E2B VMs, prepared Skill scripts, real Pi tool loop, command output isolation and destruction. No paid LLM request.');
+  console.log('Verified two distinct E2B VMs, prepared Skill scripts, real Pi tool loop, joint multi-node generation in one sandbox, command output isolation and destruction. No paid LLM request.');
 } catch(error) {
   console.error('E2B smoke failed: '+(error.code || error.name)+' — '+(error.code?.startsWith('AGENT') ? error.message : 'see the last lifecycle stage above'));
   process.exitCode=1;

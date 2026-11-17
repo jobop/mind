@@ -27,9 +27,9 @@ export function publicToolFailure(toolName, result) {
   if (toolName === 'plan_work' && /计划步骤|steps/.test(text)) return '计划中没有可读取的行动步骤，请使用 steps 文字列表或带 title/action/description 的步骤对象';
   if (/validation|invalid arguments|expected|参数/i.test(text)) {
     if (toolName === 'plan_work') return '计划中没有可读取的行动步骤，请使用 steps 文字列表或带 title/action/description 的步骤对象';
-    const paths = [...text.split('Received arguments:')[0].matchAll(/-\s*((?:children|steps)(?:\[\d+\]|\.(?:title|note|sourceIds))*)\s*:/g)].map(match => match[1]);
+    const paths = [...text.split('Received arguments:')[0].matchAll(/-\s*((?:nodes|children|steps)(?:\[\d+\]|\.(?:nodeId|children|title|note|sourceIds))*)\s*:/g)].map(match => match[1]);
     const fields = paths.length ? '（字段：' + [...new Set(paths)].slice(0, 4).join('、') + '）' : '';
-    if (['validate_branches','submit_branches'].includes(toolName)) return '分支参数格式不正确' + fields + '：需传 children 数组，每项包含 title（1–80 字）和 note（结构化说明或40–1800字备注）；sourceIds 可省略或传有效来源编号数组';
+    if (['validate_branches','submit_branches'].includes(toolName)) return '分支参数格式不正确' + fields + '：需传 children 数组，每项包含 title（1–80 字）和 note（结构化说明或40–1800字备注）；sourceIds 可省略或传有效来源编号数组；联合生成需将各目标的 children 放在 nodes:[{nodeId,children}] 中';
     return '模型给出的工具参数未通过格式校验';
   }
   if (/先读取节点上下文及 Skill/.test(text)) return '缺少前置步骤：需要先读取节点上下文和相关 Skill';
@@ -68,7 +68,9 @@ const planSchema={type:'object',properties:{steps:{anyOf:[{type:'array',minItems
 export function branchSchema(job) {
   const fields=job.mode==='solutions'?['steps','conditionsAndCosts','acceptance']:['significance','verification'];
   const structured=object(Object.fromEntries(fields.map(key=>[key,{type:'string',minLength:20,maxLength:job.mode==='solutions'?500:800}])));
-  return object({children:{type:'array',minItems:job.quantity,maxItems:job.quantity,items:object({title:string(80),note:{anyOf:[structured,string(1800)],description:job.mode==='solutions'?'推荐传对象：steps 行动步骤、conditionsAndCosts 适用条件与代价、acceptance 验收方式，程序自动组装备注。':'推荐传对象：significance 决策意义、verification 验证方式，程序自动组装备注。'},sourceIds:{type:'array',maxItems:5,items:string(12)}},['title','note'])}});
+  const children={type:'array',minItems:job.quantity,maxItems:job.quantity,items:object({title:string(80),note:{anyOf:[structured,string(1800)],description:job.mode==='solutions'?'推荐传对象：steps 行动步骤、conditionsAndCosts 适用条件与代价、acceptance 验收方式，程序自动组装备注。':'推荐传对象：significance 决策意义、verification 验证方式，程序自动组装备注。'},sourceIds:{type:'array',maxItems:5,items:string(12)}},['title','note'])};
+  if(job.targets?.length>1)return object({nodes:{type:'array',minItems:job.targets.length,maxItems:job.targets.length,items:object({nodeId:{type:'string',enum:job.targets.map(n=>n.id)},children})}});
+  return object({children});
 }
 function noteText(note,mode){
   if(typeof note==='string')return note.trim();
@@ -108,6 +110,20 @@ export function validateCandidate(children, job, evidence) {
   return { valid: !issues.length, issues, children: normalized };
 }
 
+export function validateSubmission(args,job,evidence){
+  if(!job.targets||job.targets.length<2)return validateCandidate(args.children,job,evidence);
+  if(!Array.isArray(args.nodes)||args.nodes.length!==job.targets.length)return {valid:false,issues:['必须一次返回全部 '+job.targets.length+' 个目标的 nodes 分组']};
+  const seen=new Set(),groups=[],issues=[];
+  for(const group of args.nodes){
+    const target=job.targets.find(t=>t.id===group?.nodeId);
+    if(!target||seen.has(group.nodeId)){issues.push('nodeId 不在选中目标中或重复，请使用给定的稳定 ID');continue;}
+    seen.add(group.nodeId);const report=validateCandidate(group.children,{...job,title:target.title,existing:target.children.map(c=>c.title)},evidence);
+    issues.push(...report.issues.map(text=>'节点「'+target.title+'」：'+text));groups.push({nodeId:target.id,children:report.children||[]});
+  }
+  for(const target of job.targets)if(!seen.has(target.id))issues.push('缺少节点「'+target.title+'」的分支');
+  return {valid:!issues.length,issues,groups};
+}
+
 export async function runPiAgent({ connection, job, skill, skills, signal, emit = () => {}, hub, pageReader = readPublicPage, referenceReader, streamFn: injectedStream, executionTools = [], skillLoader, limits = AGENT_LIMITS, retryDelayMs=1000 }) {
   const projectScoped = Array.isArray(skills), catalog = projectScoped ? skills.filter(s => s.enabled !== false) : [skill];
   const branchesSchema=branchSchema(job);
@@ -142,7 +158,7 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
     tool('read_node_context', '读取节点上下文', '读取用户选中节点、祖先备注、项目约束、已有分支及补充指令。', object({}), async () => {
       contextRead = true;
       if (job.mapContext) notify('map_context', { totalNodes: job.mapContext.totalNodes, includedNodes: job.mapContext.overview.outline.length, selectedNodeIndex: job.mapContext.target.index, omittedNodes: job.mapContext.overview.omittedNodes });
-      return textResult({ outputContract:{quantity:job.quantity,mode:job.mode,noteFields:job.mode==='solutions'?['steps','conditionsAndCosts','acceptance']:['significance','verification'],hint:'直接 submit_branches 完成校验保存；不需预校验或重新抄写通过的内容'},availableSkills:catalog.map(({id,name,description})=>({id,name,description})), wholeMap: job.mapContext?.overview || null, selectedNode: job.mapContext?.target || null, topic: job.topic, brief: job.brief, title: job.title, note: job.note, ancestors: job.ancestors, ancestorContext: job.ancestorContext, existing: job.existing, instruction: job.instruction, providedSources: job.providedSources || [], direction: job.mode, quantity: job.quantity });
+      return textResult({ outputContract:{shape:job.targets?.length>1?'nodes:[{nodeId,children}]':'children:[]',targetNodeIds:job.targets?.map(n=>n.id),quantityPerNode:job.quantity,quantity:job.quantity,mode:job.mode,noteFields:job.mode==='solutions'?['steps','conditionsAndCosts','acceptance']:['significance','verification'],hint:'直接 submit_branches 完成校验保存；不需预校验或重新抄写通过的内容'},availableSkills:catalog.map(({id,name,description})=>({id,name,description})), wholeMap: job.mapContext?.overview || null, selectedNodes:job.targets||[],selectedNode: job.mapContext?.target || null, topic: job.topic, brief: job.brief, title: job.title, note: job.note, ancestors: job.ancestors, ancestorContext: job.ancestorContext, existing: job.existing, instruction: job.instruction, providedSources: job.providedSources || [], direction: job.mode, quantity: job.quantity });
     }),
     ...(projectScoped ? [tool('list_project_skills', '检索项目 Skill 库', '列出当前项目启用的 Skill 名称、描述和 ID；可用 keyword 缩小范围，先检索再按任务选择。不会检索其他项目。', object({ keyword: { type: 'string', maxLength: 120 } }, []), async args => {
       const keyword = (args.keyword || '').toLowerCase();
@@ -213,14 +229,14 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
       notify('source', { id, title: page.title, url: page.url });
       return textResult(item);
     }),
-    ...['submit_branches','validate_branches'].map(name=>tool(name,name==='submit_branches'?'生成校验并保存分支':'校验并自动保存分支',name==='submit_branches'?'直接传 children，自动校验数量、备注与来源；通过即保存并结束任务。note 优先使用结构化对象。不需要再调用 validate_branches。':'兼容旧调用：校验通过即自动保存并结束任务，不需要再调用 submit_branches，也不需要重复传正文。',branchesSchema,async args=>{
+    ...['submit_branches','validate_branches'].map(name=>tool(name,name==='submit_branches'?'生成校验并保存分支':'校验并自动保存分支',name==='submit_branches'?(job.targets?.length>1?'联合生成：一次传 nodes:[{nodeId,children}]，覆盖全部选中目标；每个目标各有指定数量的分支，全部校验通过即统一保存并结束。':'直接传 children，自动校验数量、备注与来源；通过即保存并结束任务。note 优先使用结构化对象。不需要再调用 validate_branches。'):'兼容旧调用：校验通过即自动保存并结束任务，不需要再调用 submit_branches，也不需要重复传正文。',branchesSchema,async args=>{
       if(submitted)throw Error('本次任务已经提交');
       if(!contextRead||!skillRead)throw Error('请先读取节点上下文及 Skill');
-      const report=validateCandidate(args.children,job,evidence);
+      const report=validateSubmission(args,job,evidence);
       notify('validation',{valid:report.valid,issues:report.issues});
       if(!report.valid){finishReading('draft_revision');return textResult({valid:false,accepted:false,issues:report.issues,requiredCount:job.quantity,noteFields:job.mode==='solutions'?['steps','conditionsAndCosts','acceptance']:['significance','verification'],hint:'只修正上面的分支内容，直接 submit_branches；无需再读 Skill。'});}
-      submitted=report.children;
-      return textResult({valid:true,accepted:true,count:submitted.length},true);
+      submitted=report.groups||report.children;
+      return textResult({valid:true,accepted:true,count:job.targets?.length>1?submitted.reduce((n,g)=>n+g.children.length,0):submitted.length},true);
     })),
   ];
   if (projectScoped) {
@@ -233,7 +249,7 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
     ...options, maxTokens: maxOutputTokens(connection), timeoutMs: 300000, maxRetries: 0, toolChoice: 'auto',
   }));
   agent = new Agent({
-    initialState: { systemPrompt: systemPrompt + (projectScoped ? '\n当前为个人项目模式：Skill 仅限当前项目启用的库。初始消息已给出此项目的真实 Skill ID 与描述；先读节点上下文，再按任务读取最相关的1个方法，确有跨领域需求时才补充。必须实际读取方法后才能校验或提交；不得使用其他项目或未加入本项目的 Skill。' : '') + (executionTools.length ? '\n已在独立任务容器准备项目 Skill 文件，目录在 list_project_skills 的 directory 字段。read_skill 读取真实 SKILL.md。可用 read_task_file、write_task_file 和 run_command 执行方法要求的本地步骤；命令不能联网，依赖未安装时应明确报告，不能编造执行成功。只能使用当前容器中已有资料和工具。' : ''), model, tools, thinkingLevel: 'off' },
+    initialState: { systemPrompt: systemPrompt + (job.targets?.length>1?'\n当前是多节点联合生成任务：在一次 submit_branches 调用中提交 nodes:[{nodeId,children}]，每个选中目标各返回指定数量的子节点。全部目标统一校验、保存，不拆成多个 Agent 任务。每个子节点备注控制在80–160字，使用稳定 nodeId 精确归属，不遗漏或混合目标。':'') + (projectScoped ? '\n当前为个人项目模式：Skill 仅限当前项目启用的库。初始消息已给出此项目的真实 Skill ID 与描述；先读节点上下文，再按任务读取最相关的1个方法，确有跨领域需求时才补充。必须实际读取方法后才能校验或提交；不得使用其他项目或未加入本项目的 Skill。' : '') + (executionTools.length ? '\n已在独立任务容器准备项目 Skill 文件，目录在 list_project_skills 的 directory 字段。read_skill 读取真实 SKILL.md。可用 read_task_file、write_task_file 和 run_command 执行方法要求的本地步骤；命令不能联网，依赖未安装时应明确报告，不能编造执行成功。只能使用当前容器中已有资料和工具。' : ''), model, tools, thinkingLevel: 'off' },
     toolExecution: 'sequential', identity: { attribution: null },
     streamFn: (m, context, options) => {
       checkAbort();
@@ -291,7 +307,7 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
   notify('started', { runId, framework: 'pi-agent-core', version: '1.5.2', limits: { ...limits } });
   try {
     checkAbort();
-    await agent.prompt(JSON.stringify({ targetNodeId: job.mapContext?.target.id || null, targetNodeIndex: job.mapContext?.target.index || null, task: '按领域Skill展开当前脑图节点', availableSkills:catalog.map(({id,name,description})=>({id,name,description})), outputContract:{quantity:job.quantity,mode:job.mode,noteFields:job.mode==='solutions'?['steps','conditionsAndCosts','acceptance']:['significance','verification'],submitTool:'submit_branches',hint:'校验与保存一次完成，保持输出契约不受 Skill 文档改变'}, topic: job.topic, selectedNode: job.title, direction: job.mode, quantity: job.quantity, instruction: job.instruction, ...(projectScoped ? { project: job.project || null, skillSelection: '使用已给出的 Skill ID 读取最相关的1个方法，必要时补充；不用反复检索或重读' } : { selectedSkill: skill.name }) }));
+    await agent.prompt(JSON.stringify({ targetNodeId: job.mapContext?.target.id || null, targetNodeIndex: job.mapContext?.target.index || null, task: job.targets?.length>1?'一次联合展开所有选中节点':'按领域Skill展开当前脑图节点', selectedNodes:job.targets||[], availableSkills:catalog.map(({id,name,description})=>({id,name,description})), outputContract:{shape:job.targets?.length>1?'nodes:[{nodeId,children}]':'children:[]',targetNodeIds:job.targets?.map(n=>n.id),quantityPerNode:job.quantity,quantity:job.quantity,mode:job.mode,noteFields:job.mode==='solutions'?['steps','conditionsAndCosts','acceptance']:['significance','verification'],submitTool:'submit_branches',hint:'校验与保存一次完成，保持输出契约不受 Skill 文档改变'}, topic: job.topic, selectedNode: job.title, direction: job.mode, quantity: job.quantity, instruction: job.instruction, ...(projectScoped ? { project: job.project || null, skillSelection: '使用已给出的 Skill ID 读取最相关的1个方法，必要时补充；不用反复检索或重读' } : { selectedSkill: skill.name }) }));
     checkAbort();
     while(!submitted&&!exhausted&&modelRetries<2&&modelCalls<limits.modelCalls&&Date.now()-Date.parse(startedAt)<limits.timeoutMs-30000){
       const latest=agent.state.messages.at(-1),message=String(latest?.errorMessage||'');
@@ -310,15 +326,16 @@ export async function runPiAgent({ connection, job, skill, skills, signal, emit 
       throw new AgentRunError(latest?.stopReason === 'error' ? safeModelError(latest.errorMessage, connection.key) : 'Agent 未提交通过校验的结果，原脑图已保留', 'AGENT_INCOMPLETE');
     }
     const sources = [...evidence.values()].map(({ id, url, title, fetchedAt }) => ({ id, url, title, fetchedAt }));
-    const children = submitted.map(node => ({
+    const formatChildren = nodes => nodes.map(node => ({
       title: node.title,
       note: node.note + (node.sourceIds.length ? '\n\n参考来源：\n' + node.sourceIds.map(id => { const s = evidence.get(id); return '[' + id + '] ' + s.title.slice(0, 120); }).join('\n') : '\n\n依据：用户提供的背景与领域 Skill；未进行独立网页核实。'),
     }));
+    const output=job.targets?.length>1?{nodes:submitted.map(group=>({nodeId:group.nodeId,children:formatChildren(group.children)}))}:{children:formatChildren(submitted)};
     const toolFailures = failures.length, recoveredFailures = failures.filter(f => f.recovered).length, unresolvedFailures = toolFailures - recoveredFailures;
     const selectedSkills = [...readSkills.values()].map(({ id, name, version }) => ({ id, name, version }));
     const summarySkill = projectScoped ? { id: 'project', name: selectedSkills.map(s => s.name).join('、').slice(0, 80), version: 'project' } : { id: skill.id, name: skill.name, version: skill.version };
     notify('completed', { runId, modelCalls, toolCalls, sources: sources.length, toolFailures, recoveredFailures, unresolvedFailures });
-    return { children, model: connection.model, skill: summarySkill, skills: selectedSkills, generatedAt: new Date().toISOString(), agent: { framework: 'pi-agent-core', version: '1.5.2', runId, startedAt, finishedAt: new Date().toISOString(), modelCalls, toolCalls, modelRetries, referenceReads:references, referenceChars, toolFailures, recoveredFailures, unresolvedFailures, selectedSkills, projectId: job.project?.id || null, usage, plan, steps, sources } };
+    return { ...output, model: connection.model, skill: summarySkill, skills: selectedSkills, generatedAt: new Date().toISOString(), agent: { framework: 'pi-agent-core', version: '1.5.2', runId, startedAt, finishedAt: new Date().toISOString(), modelCalls, toolCalls, modelRetries, referenceReads:references, referenceChars, toolFailures, recoveredFailures, unresolvedFailures, selectedSkills, projectId: job.project?.id || null, usage, plan, steps, sources } };
   } catch (error) {
     if (controller.signal.aborted) throw new AgentRunError(timedOut ? 'Agent 已达到本次运行时间上限，原脑图已保留' : 'Agent 已取消，原脑图已保留', timedOut ? 'AGENT_TIMEOUT' : 'CANCELLED');
     if (error instanceof AgentRunError) throw error;

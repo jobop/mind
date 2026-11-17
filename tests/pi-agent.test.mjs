@@ -334,3 +334,31 @@ test('output repairs keep the relevant Skill loaded and cannot send the model ba
   assert.equal(loads,1);assert.equal(result.agent.modelCalls,3);assert.ok(!requests[2].tools.some(t=>t.function.name==='read_skill'));assert.ok(requests[2].messages.some(m=>m.role==='tool'&&m.content.includes('conditionsAndCosts')));
  }finally{globalThis.fetch=saved;}
 });
+
+test('one Pi loop jointly generates all selected targets with one grouped submission and shared Skill',async()=>{
+  const saved=globalThis.fetch,requests=[];
+  const targets=[{id:'mechanics',title:'玩法机制',note:'目标是提升策略深度',children:[]},{id:'art',title:'美术表达',note:'保持低成本易读性',children:[]}];
+  const nodes=targets.map(t=>({nodeId:t.id,children:children.map(c=>({...c,sourceIds:[]}))}));
+  const script=[[{name:'read_node_context',args:{}},{name:'read_skill',args:{}}],[{name:'submit_branches',args:{nodes}}]];
+  globalThis.fetch=async(url,options)=>{const request=JSON.parse(options.body);requests.push(request);return sseMessage(script.shift());};
+  try{
+    const result=await runPiAgent({connection,job:{...job,targets},skill,hub});
+    assert.equal(result.nodes.length,2);assert.equal(result.nodes[0].nodeId,'mechanics');assert.equal(result.nodes[1].children.length,3);
+    assert.equal(result.agent.modelCalls,2);assert.equal(result.agent.toolCalls,3);assert.equal(script.length,0);
+    const prompt=JSON.stringify(requests[0].messages);assert.match(prompt,/提升策略深度/);assert.match(prompt,/低成本易读性/);
+    const schema=requests[0].tools.find(t=>t.function.name==='submit_branches').function.parameters;
+    assert.deepEqual(schema.properties.nodes.items.properties.nodeId.enum,['mechanics','art']);
+    assert.match(JSON.stringify(requests[1].messages),/selectedNodes/);
+  }finally{globalThis.fetch=saved;}
+});
+test('batch validation rejects missing, duplicate and foreign targets and validates siblings per parent',async()=>{
+  const {validateSubmission}=await import('../runtime/pi-agent.mjs');
+  const targets=[{id:'a',title:'机制',children:[{title:children[0].title}]},{id:'b',title:'画面',children:[]}],batch={...job,targets};
+  const groups=targets.map(t=>({nodeId:t.id,children:children.map(c=>({...c,sourceIds:[]}))}));
+  assert.equal(validateSubmission({nodes:groups.slice(0,1)},batch,new Map()).valid,false);
+  assert.equal(validateSubmission({nodes:[groups[1],groups[1]]},batch,new Map()).valid,false);
+  assert.equal(validateSubmission({nodes:[groups[1],{...groups[0],nodeId:'foreign'}]},batch,new Map()).valid,false);
+  assert.match(validateSubmission({nodes:groups},batch,new Map()).issues.join(','),/机制/);
+  groups[0].children[0].title='另一种方法如何验证？';assert.equal(validateSubmission({nodes:groups},batch,new Map()).valid,true);
+  groups[1].children[0].sourceIds=['S999'];assert.equal(validateSubmission({nodes:groups},batch,new Map()).valid,false);
+});
